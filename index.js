@@ -58,6 +58,7 @@ import {
   buildZipArtifact,
   computeSnapshotId,
   normalizeDeviceName,
+  normalizeRelativeZipPath,
   parseManifest,
   verifyArtifact,
 } from './lib/snapshot.mjs';
@@ -542,7 +543,16 @@ export async function buildLocalSnapshot(options) {
     const packageFiles = await walkPluginPackage(plugin.originalDir, budget, warnings);
     packages.push({ name: plugin.name, originalDir: plugin.originalDir });
     for (const file of packageFiles) {
-      pluginFiles.push({ path: `${plugin.name}/${file.path}`, bytes: file.bytes });
+      const zipPath = `${plugin.name}/${file.path}`;
+      // 上传侧与下载侧共用同一套路径规则：Linux 上可能出现 Windows 无法表示的
+      // 文件名（`:`、尾随点等），这种条目直接跳过并警告，不能整次上传失败。
+      try {
+        normalizeRelativeZipPath(zipPath);
+      } catch (error) {
+        warnings.push(`跳过非法文件名的插件文件: ${zipPath}（${error?.message ?? error}）`);
+        continue;
+      }
+      pluginFiles.push({ path: zipPath, bytes: file.bytes });
     }
   }
   pluginFiles.push({
@@ -584,6 +594,36 @@ export function detectDeviceName() {
     if (isNonEmptyString(candidate)) return normalizeDeviceName(candidate);
   }
   return 'Unknown Device';
+}
+
+/**
+ * 读取**下载之前**本地 profile `package.json` 里声明的本地插件目录。
+ *
+ * 这是插件恢复目标的唯一可信来源：远端快照里的 `package.json` 与
+ * `_plugins.json` 都是远端可控数据，不能用来决定写入位置。所以下载流程必须在
+ * 写入任何远端配置**之前**调用它，并把结果传给 `applySnapshot`。
+ *
+ * @param {string} profileDir 当前 profile 目录。
+ * @returns {Promise<Map<string, string>>} 包名 → 本地插件目录。
+ */
+export async function readTrustedLocalDependencies(profileDir) {
+  const trusted = new Map();
+  let manifest;
+  try {
+    manifest = JSON.parse(await fs.readFile(path.join(profileDir, 'package.json'), 'utf8'));
+  } catch {
+    return trusted;
+  }
+  const dependencies = manifest?.dependencies;
+  if (dependencies === null || typeof dependencies !== 'object') return trusted;
+  for (const [name, spec] of Object.entries(dependencies)) {
+    if (typeof spec !== 'string') continue;
+    const match = /^(?:link|file):(.+)$/u.exec(spec.trim());
+    if (match === null) continue;
+    const raw = match[1];
+    trusted.set(name, path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(profileDir, raw));
+  }
+  return trusted;
 }
 
 // ─── 远端目录 ────────────────────────────────────────────────
@@ -697,7 +737,15 @@ export async function uploadSnapshot(ctx, options) {
   await webdav.ensureDirectories(dirSegs);
   // 上传前先看远端 manifest：存在但协议不兼容时拒绝覆盖（设计 §2），
   // 避免把未来版本/其它工具的同步数据静默冲掉。
-  const existing = await webdav.get([...dirSegs, MANIFEST_NAME], MAX_MANIFEST_BYTES).catch(() => null);
+  let existing;
+  try {
+    existing = await webdav.get([...dirSegs, MANIFEST_NAME], MAX_MANIFEST_BYTES);
+  } catch (error) {
+    throw new SyncError(
+      `读取远端 manifest 失败，为避免覆盖已有数据已中止上传: ${error?.message ?? error}`,
+      'REMOTE_UNREADABLE',
+    );
+  }
   if (existing !== null) {
     try {
       parseManifest(existing.bytes);
@@ -775,12 +823,17 @@ export async function downloadSnapshot(ctx, options) {
   const configEntries = zipRead(configFile.bytes);
   const pluginEntries = zipRead(pluginsFile.bytes);
   const pluginList = readPluginList(pluginEntries);
+  // 插件恢复目标只能来自「下载前」的本地 profile 依赖声明（远端快照里的
+  // package.json / _plugins.json 都是远端可控数据，不能决定写入位置）。
+  const trustedDependencies = await readTrustedLocalDependencies(profile.dir);
   let applied;
   try {
     applied = await applySnapshot({
       configEntries,
       pluginEntries,
       pluginList,
+      trustedDependencies,
+      allowCredentials: options.syncCredentials,
       profileDir: profile.dir,
       dshHome,
       backupsRoot: backupsRoot(dshHome),

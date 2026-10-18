@@ -92,8 +92,9 @@ plugins.zip       # 插件包快照（<包名>/... + _plugins.json 记录原路�
 - **下载端有路径防护**：
   - 只允许恢复白名单内的配置文件（profile 的 5 个配置文件，home 的 `.credentials.yaml` / `settings.yaml` / `settings.json`）；zip 里其它路径（`sessions/`、`node_modules/` 等）一律忽略并记 warning。
   - 目标父目录用 `realpath` 做二次校验，Windows junction / symlink 无法把写入引出目标根。
-  - 插件包写回位置**只信本地 profile 的依赖声明**（`link:` / `file:`），快照里记录的 `originalDir` 只作提示；系统目录（`C:\Windows`、`Program Files` 等）一律拒绝，失败时回退到 `<profile>/plugins/<包名>` 并改写依赖。
+  - 插件包写回位置**只信「下载前」本地 profile 的依赖声明**（`link:` / `file:`），远端快照里的 `package.json` 与 `_plugins.json` 都不能决定写入位置；系统目录与用户敏感目录（桌面/文档/下载/启动项等）一律拒绝，无法写回时回退到 `<profile>/plugins/<包名>` 并改写依赖。
   - 拒绝含 `:`（ADS）、以 `.`/空格结尾、以及 Windows 保留设备名（`CON`/`NUL` 等）的 zip 条目名。
+  - 本机 `syncCredentials: false` 时，下载会忽略远端快照里的 `.credentials.yaml`，不会覆盖本地凭据。
 - 上传前会先读远端 `manifest.json`：协议版本不兼容时**拒绝覆盖**并给出提示。
 - 建议使用 WebDAV 的专用应用密码（坚果云等），不要使用主账号密码。
 

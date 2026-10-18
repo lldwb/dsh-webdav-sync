@@ -18,6 +18,7 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 
 import { applySnapshot } from '../lib/apply.mjs';
+import { normalizeRelativeZipPath } from '../lib/snapshot.mjs';
 
 import {
   buildLocalSnapshot,
@@ -45,6 +46,8 @@ function createMockWebDav() {
   const files = new Map();
   // 真实 WebDAV 的 base 路径（本 mock 的 `/dav`）必然已存在，预置到目录表里。
   const dirs = new Set(['/', '/dav']);
+  /** 注入故障的 GET 路径（用于测试 fail-closed 行为）。 */
+  const failGets = new Set();
   let etagCounter = 0;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
@@ -80,6 +83,11 @@ function createMockWebDav() {
       return;
     }
     if (req.method === 'GET') {
+      if (failGets.has(pathname)) {
+        res.writeHead(500);
+        res.end('injected failure');
+        return;
+      }
       const file = files.get(pathname);
       if (file === undefined) {
         res.writeHead(404);
@@ -104,7 +112,7 @@ function createMockWebDav() {
     res.writeHead(405);
     res.end('unsupported');
   });
-  return { server, files, dirs };
+  return { server, files, dirs, failGets };
 }
 
 // ─── 夹具 ───────────────────────────────────────────────────
@@ -145,6 +153,7 @@ before(async () => {
   fixtures.webdav = mock.server;
   fixtures.files = mock.files;
   fixtures.dirs = mock.dirs;
+  fixtures.failGets = mock.failGets;
   await new Promise((resolve) => mock.server.listen(0, '127.0.0.1', resolve));
   const address = mock.server.address();
   fixtures.baseUrl = `http://127.0.0.1:${address.port}/dav/`;
@@ -308,7 +317,10 @@ test('downloadSnapshot：恢复远端内容、写备份、保留本地新增文�
 
   const state = await readState(fixtures.dshHome);
   assert.equal(state.lastSuccess, 'download');
-  assert.equal(state.lastLocalSnapshotId, result.snapshotId);
+  assert.equal(state.lastLocalSnapshotId, result.localSnapshotId);
+  // 同机恢复（插件写回原目录）不会改写依赖，本地重建快照应与远端一致。
+  assert.equal(result.adapted, false);
+  assert.equal(result.localSnapshotId, result.snapshotId);
 });
 
 test('buildStatus：状态、平台信息与密码存在性', async () => {
@@ -501,31 +513,82 @@ test('applySnapshot：插件目标禁止系统目录（回退到 profile 内）'
   }
 });
 
-test('applySnapshot：跨机恢复（依赖指向不存在目录）后本地快照 id 与原 id 不同', async () => {
-  // 这条用例守护自动同步的去重语义：跨机恢复会改写依赖，本地内容与远端不同，
-  // 因此 index.js 在下载后要重建快照再写 lastLocalSnapshotId，而不是直接写远端 id。
-  const fx = await makeApplyFixture();
+test('uploadSnapshot：读取远端 manifest 失败时中止（fail-closed，不覆盖）', async () => {
+  const dir = '/dav/dsh-sync/v1/default';
+  fixtures.failGets.add(`${dir}/manifest.json`);
   try {
-    await writeFile(
-      path.join(fx.profileDir, 'package.json'),
-      JSON.stringify({ name: 'p', dependencies: { demo: 'link:Z:/definitely/not/exists' } }),
+    await assert.rejects(
+      uploadSnapshot(fixtures.ctx, fixtures.options),
+      (error) => error?.code === 'REMOTE_UNREADABLE',
     );
+  } finally {
+    fixtures.failGets.delete(`${dir}/manifest.json`);
+  }
+});
+
+test('applySnapshot：配置白名单拒绝后也不会用远端 package.json 决定插件目标', async () => {
+  // 即使远端 config.zip 把 package.json 改成 link:任意已存在目录，插件目标
+  // 也只能来自 trustedDependencies（下载前本地声明）；这里传空 Map，必须回退。
+  const fx = await makeApplyFixture();
+  const outside = path.join(fx.root, 'outside');
+  await mkdir(outside, { recursive: true });
+  try {
     const result = await applySnapshot({
-      configEntries: [],
-      pluginEntries: [
-        { name: 'demo/index.js', bytes: Buffer.from('x\n') },
-        { name: '_plugins.json', bytes: Buffer.from(JSON.stringify([{ name: 'demo', originalDir: 'Z:/definitely/not/exists' }])) },
+      configEntries: [
+        {
+          name: 'profile/package.json',
+          bytes: Buffer.from(JSON.stringify({ name: 'p', dependencies: { demo: `link:${outside}` } })),
+        },
       ],
-      pluginList: [{ name: 'demo', originalDir: 'Z:/definitely/not/exists' }],
+      pluginEntries: [
+        { name: 'demo/pwn.js', bytes: Buffer.from('pwn\n') },
+        { name: '_plugins.json', bytes: Buffer.from(JSON.stringify([{ name: 'demo', originalDir: outside }])) },
+      ],
+      pluginList: [{ name: 'demo', originalDir: outside }],
+      trustedDependencies: new Map(),
       profileDir: fx.profileDir,
       dshHome: fx.dshHome,
       backupsRoot: fx.backupsRoot,
       backupKeep: 2,
     });
     assert.equal(result.plugins[0].fallback, true);
-    const manifest = JSON.parse(await readFile(path.join(fx.profileDir, 'package.json'), 'utf8'));
-    assert.equal(manifest.dependencies.demo, 'link:./plugins/demo');
+    assert.equal(existsSync(path.join(outside, 'pwn.js')), false, '远端 package.json 不能决定写入位置');
+    assert.equal(await readFile(path.join(fx.profileDir, 'plugins', 'demo', 'pwn.js'), 'utf8'), 'pwn\n');
   } finally {
     await rm(fx.root, { recursive: true, force: true });
   }
+});
+
+test('applySnapshot：allowCredentials=false 时忽略远端的 .credentials.yaml', async () => {
+  const fx = await makeApplyFixture();
+  try {
+    const result = await applySnapshot({
+      configEntries: [
+        { name: 'home/.credentials.yaml', bytes: Buffer.from('version: 1\nkeys:\n  REMOTE: leaked\n') },
+      ],
+      pluginEntries: [],
+      pluginList: [],
+      allowCredentials: false,
+      profileDir: fx.profileDir,
+      dshHome: fx.dshHome,
+      backupsRoot: fx.backupsRoot,
+      backupKeep: 2,
+    });
+    assert.equal(result.warnings.some((warning) => warning.includes('syncCredentials=false')), true);
+    assert.equal(existsSync(path.join(fx.dshHome, '.credentials.yaml')), false);
+  } finally {
+    await rm(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('normalizeRelativeZipPath：拒绝 Windows 怪物文件名', () => {
+  const reject = (value) => assert.throws(() => normalizeRelativeZipPath(value), /ZIP 路径/u);
+  reject('a/.. /x');
+  reject('a/trail./x');
+  reject('a/trail /x');
+  reject('CON/x');
+  reject('NUL.txt/x');
+  reject('a.txt:stream');
+  reject('a/\u0001bad');
+  assert.equal(normalizeRelativeZipPath('plugins/我的 文件.txt'), 'plugins/我的 文件.txt');
 });
