@@ -24,10 +24,12 @@ import {
   buildLocalSnapshot,
   buildStatus,
   createRpcHandler,
+  openSession,
   patchState,
   readState,
   remoteDirSegments,
   remoteRootSegments,
+  resolveBaseUrl,
   resolveOptions,
   resolveProfileInfo,
   sanitizeRemoteSegment,
@@ -591,4 +593,36 @@ test('normalizeRelativeZipPath：拒绝 Windows 怪物文件名', () => {
   reject('a.txt:stream');
   reject('a/\u0001bad');
   assert.equal(normalizeRelativeZipPath('plugins/我的 文件.txt'), 'plugins/我的 文件.txt');
+});
+
+test('resolveBaseUrl：显式地址优先，否则按服务商预设兜底', () => {
+  assert.equal(
+    resolveBaseUrl({ baseUrl: 'https://mine.example/dav/', providerPreset: 'jianguoyun' }),
+    'https://mine.example/dav/',
+  );
+  assert.equal(resolveBaseUrl({ baseUrl: '', providerPreset: 'jianguoyun' }), 'https://dav.jianguoyun.com/dav/');
+  assert.equal(resolveBaseUrl({ baseUrl: '   ', providerPreset: 'JIANGUOYUN' }), 'https://dav.jianguoyun.com/dav/');
+  assert.equal(resolveBaseUrl({ baseUrl: '', providerPreset: 'custom' }), '');
+  assert.equal(resolveBaseUrl({ baseUrl: '', providerPreset: 'nextcloud' }), '');
+  assert.equal(resolveBaseUrl({}), '');
+  assert.equal(resolveBaseUrl(undefined), '');
+});
+
+test('openSession：地址为空但选了坚果云预设时仍可建立会话', async () => {
+  // 复现真实事故：配置里 providerPreset=jianguoyun、baseUrl 为空、账户与密码都在，
+  // 旧实现直接抛 NOT_CONFIGURED；现在应按预设地址兜底。
+  const options = {
+    ...fixtures.options,
+    baseUrl: '',
+    providerPreset: 'jianguoyun',
+  };
+  const session = await openSession(fixtures.ctx, options);
+  assert.equal(typeof session.webdav.put, 'function');
+  assert.deepEqual(session.dirSegs, ['dsh-sync', 'v1', 'default']);
+
+  // 未选预设、地址也为空时，仍然要给出清晰的 NOT_CONFIGURED。
+  await assert.rejects(
+    openSession(fixtures.ctx, { ...fixtures.options, baseUrl: '', providerPreset: 'custom' }),
+    (error) => error?.code === 'NOT_CONFIGURED',
+  );
 });

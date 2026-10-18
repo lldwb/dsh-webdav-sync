@@ -936,6 +936,11 @@ window.__ModuleLoader__.load({
         );
         this.store = this.form.bind(() => this.projection());
 
+        // 服务商预设只在「手动切换下拉」时写入地址；从已保存配置恢复表单时地址栏
+        // 可能是空的（界面显示「坚果云」却没有地址，动作直接报未配置）。这里补偿
+        // 一次，动作按钮保存后即生效（Host 侧另有同语义兜底）。
+        this.applyPresetBaseUrlIfMissing();
+
         // 设置命名空间本身变化时（例如别处改了配置）重新确认凭据状态。
         this.unsubscribe = scope.subscribe(() => {
           this.readCredential();
@@ -947,6 +952,30 @@ window.__ModuleLoader__.load({
         }, STATUS_POLL_MS);
         this.readCredential();
         this.pollStatus();
+      }
+
+      /**
+       * 服务商预设补偿：预设已知但地址为空时，把预设地址填进表单暂存。
+       *
+       * 真实场景：用户在设置页选了「坚果云」并保存，之后重启 DSH；恢复出来的表单
+       * 里 `providerPreset` 是 `jianguoyun` 而 `baseUrl` 是空（预设只在手动切换
+       * 下拉那一刻写地址），于是「选了坚果云、账户密码都填了」仍报「尚未配置
+       * WebDAV 服务器地址」。这里把预设地址补进暂存，动作按钮会先保存再执行。
+       */
+      applyPresetBaseUrlIfMissing() {
+        try {
+          const snapshot = this.scope.getSnapshot();
+          const value = snapshot && snapshot.value ? snapshot.value : {};
+          const savedBaseUrl = typeof value.baseUrl === 'string' ? value.baseUrl.trim() : '';
+          if (savedBaseUrl !== '') return;
+          const presetId = typeof value.providerPreset === 'string' ? value.providerPreset : '';
+          const preset = PROVIDER_PRESETS.find((item) => item.id === presetId);
+          if (preset === undefined || preset.baseUrl === '') return;
+          const actions = this.form.actions();
+          if (typeof actions.edit === 'function') actions.edit('baseUrl', preset.baseUrl);
+        } catch {
+          // 读取失败保持原样；Host 侧的 resolveBaseUrl 还会再兜底一次。
+        }
       }
 
       /** 用表单当前的读取结果与页面自有状态构建页面快照。 */
