@@ -1160,7 +1160,139 @@ export function startAutoSync(ctx, config, runtime) {
   };
 }
 
-// ─── 插件入口 ────────────────────────────────────────────────
+// ─── 调试诊断 ────────────────────────────────────────────────
+
+/**
+ * 把一行诊断信息追加到 `$DSH_HOME/webdav-sync/diag.log`。
+ *
+ * DSH 桌面版的 Host logger 输出不一定落盘，而「RPC 路由没注册」这类问题在界面上
+ * 只表现为 HTTP 405，排查时需要一个确定可见的落点。这里只写纯文本、不写凭据。
+ *
+ * @param {string} line 诊断行。
+ */
+export async function appendDiagnostic(line) {
+  try {
+    const dir = syncDataDir(resolveDshHome());
+    await fs.mkdir(dir, { recursive: true });
+    await fs.appendFile(path.join(dir, 'diag.log'), `${new Date().toISOString()} ${line}\n`, 'utf8');
+  } catch {
+    // 诊断日志失败不影响功能
+  }
+}
+
+// ─── RPC 通道安装 ────────────────────────────────────────────
+
+/** RPC 请求体上限：动作请求只是几个 JSON 字段，64 KiB 足够。 */
+const MAX_RPC_BODY_BYTES = 64 * 1024;
+
+/**
+ * 在 Host 的 web server 上注册浏览器半使用的 RPC 通道。
+ *
+ * 为什么不用 `ctx.connection.rpc.handle()`：它注册时执行
+ * `owner.effect(() => owner.webServer.register(route))`，其中 owner 是调用方
+ * fiber 的 ctx；调用方没有同时 inject `webServer` 时，这次属性访问会抛
+ * `"cannot get property \"webServer\" without inject"`，表现为客户端拿到
+ * **HTTP 405**（请求落到 SPA fallback）。这里显式注册 prefix 路由，并复用
+ * Connection 的公开认证入口 `admit()`，请求/响应信封与官方 RPC carrier 一致。
+ *
+ * @param {object} ctx Cordis 上下文。
+ * @param {object} config 行配置。
+ * @param {object} runtime 运行时状态。
+ * @returns {void}
+ */
+export function installRpcChannel(ctx, config, runtime) {
+  const handler = createRpcHandler(ctx, config, runtime);
+  ctx.inject?.(['connection', 'webServer'], (rpcCtx) => {
+    rpcCtx.effect(() => {
+      const connection = rpcCtx.connection;
+      const webServer = rpcCtx.webServer;
+      if (connection === undefined || webServer === undefined) {
+        void appendDiagnostic('[rpc] connection 或 webServer 服务不可用，跳过 RPC 通道注册');
+        return () => {};
+      }
+      try {
+        const dispose = webServer.register({
+          kind: 'prefix',
+          path: RPC_CHANNEL,
+          handler: async (req, res) => {
+            let admission;
+            try {
+              admission = connection.admit(req);
+            } catch (error) {
+              res.writeHead(500);
+              res.end(`admission failed: ${String(error)}`);
+              return;
+            }
+            if ('rejection' in admission) {
+              res.writeHead(admission.rejection);
+              res.end(admission.rejection === 401 ? 'unauthorized' : 'forbidden');
+              return;
+            }
+            if (req.method !== 'POST') {
+              res.writeHead(404);
+              res.end('not found');
+              return;
+            }
+            const chunks = [];
+            try {
+              for await (const chunk of req) chunks.push(chunk);
+            } catch {
+              res.writeHead(400);
+              res.end('request body unreadable');
+              return;
+            }
+            const raw = Buffer.concat(chunks);
+            if (raw.length > MAX_RPC_BODY_BYTES) {
+              res.writeHead(413);
+              res.end('request body too large');
+              return;
+            }
+            let request;
+            try {
+              request = JSON.parse(raw.toString('utf8'));
+            } catch {
+              res.writeHead(400);
+              res.end('body is not JSON');
+              return;
+            }
+            const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+            const endpoint = url.pathname.startsWith(`${RPC_CHANNEL}/`)
+              ? url.pathname.slice(RPC_CHANNEL.length + 1)
+              : '';
+            const controller = new AbortController();
+            req.on('close', () => controller.abort());
+            let result;
+            try {
+              result = await handler(
+                String(request?.method ?? endpoint),
+                request?.payload,
+                controller.signal,
+                admission.peer,
+              );
+            } catch (error) {
+              res.writeHead(500);
+              res.end(`handler failure: ${String(error)}`);
+              return;
+            }
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ type: 'server-response', rpcId: request?.rpcId, result }));
+          },
+        });
+        void appendDiagnostic(`[rpc] 已注册 prefix 路由 ${RPC_CHANNEL}`);
+        return dispose;
+      } catch (error) {
+        void appendDiagnostic(`[rpc] webServer.register 失败: ${error?.message ?? error}`);
+        // 回退到官方通道（若该部署的 rpc.handle 可用）。
+        try {
+          return connection.rpc.handle(RPC_CHANNEL, handler);
+        } catch (fallbackError) {
+          void appendDiagnostic(`[rpc] rpc.handle 回退也失败: ${fallbackError?.message ?? fallbackError}`);
+          return () => {};
+        }
+      }
+    }, 'webdav-sync: rpc channel');
+  });
+}
 
 /**
  * 安装插件：设置页策略、RPC 通道、自动同步。
@@ -1179,13 +1311,8 @@ export function apply(ctx, config) {
     );
   });
 
-  // 浏览器半的 RPC 通道。
-  ctx.inject?.(['connection'], (connectionCtx) => {
-    connectionCtx.effect(
-      () => connectionCtx.connection.rpc.handle(RPC_CHANNEL, createRpcHandler(ctx, config, runtime)),
-      'webdav-sync: rpc channel',
-    );
-  });
+  // 浏览器半的 RPC 通道（见 installRpcChannel 的注释：必须同时 inject webServer）。
+  installRpcChannel(ctx, config, runtime);
 
   // 自动同步（配置变化上传）。
   ctx.effect(() => startAutoSync(ctx, config, runtime), 'webdav-sync: auto sync');
