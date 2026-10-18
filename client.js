@@ -96,6 +96,9 @@ window.__ModuleLoader__.load({
       downloadSuccess: 'Download finished',
       downloadRestart: '; restart DSH to apply.',
       pluginWarnings: '; plugin warnings: ',
+      downloadInstall:
+        '; plugins were restored into the profile: run the command below, then restart DSH — ',
+      downloadInstallTail: ' (this machine had no original plugin directory, so the packages now live in <profile>/plugins).',
       actionSuccess: 'Done.',
       actionFailed: 'The action failed.',
       saveBlocked: 'The form still has unsaved or invalid fields, so this action was cancelled.',
@@ -174,6 +177,8 @@ window.__ModuleLoader__.load({
       downloadSuccess: '下载完成',
       downloadRestart: '；重启 DSH 后生效。',
       pluginWarnings: '；插件写入警告：',
+      downloadInstall: '；有插件被恢复到 profile 内目录，请先运行下面的命令再重启 DSH：',
+      downloadInstallTail: '（本机没有这些插件的原目录，插件已放进 <profile>/plugins）。',
       actionSuccess: '操作完成。',
       actionFailed: '操作失败。',
       saveBlocked: '表单还有未保存或无效的字段，已取消本次操作。',
@@ -1134,8 +1139,14 @@ window.__ModuleLoader__.load({
           return `${this.t('uploadSuccess')}${summarySuffix(this.t, value)}${warningsSuffix(this.t, value)}`;
         }
         if (endpoint === 'download') {
+          // 跨机恢复：插件落到 <profile>/plugins，必须再跑一次依赖安装才能被 DSH
+          // 解析（否则插件管理器显示「包不可用」）。把要跑的命令直接写在结果里。
+          const install =
+            value && value.requiresInstall === true
+              ? `${this.t('downloadInstall')}${value.installHint || ''}${this.t('downloadInstallTail')}`
+              : '';
           const restart = value && value.requiresRestart === true ? this.t('downloadRestart') : '';
-          return `${this.t('downloadSuccess')}${summarySuffix(this.t, value)}${warningsSuffix(this.t, value)}${restart}`;
+          return `${this.t('downloadSuccess')}${summarySuffix(this.t, value)}${warningsSuffix(this.t, value)}${install}${restart}`;
         }
         return this.t('actionSuccess');
       }

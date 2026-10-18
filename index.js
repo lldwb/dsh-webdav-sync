@@ -914,6 +914,15 @@ export async function downloadSnapshot(ctx, options) {
     lastErrorAt: null,
   }).catch(() => {});
 
+  // 跨机恢复时插件会回退到 profile 内 `plugins/<包名>` 并改写依赖；DSH 还需要一次
+  // 依赖安装才会把这些包链接进 node_modules，否则插件管理器会报「包不可用」。
+  // 这里把「需要安装」和要跑的命令显式带回给界面。
+  const fallbackPlugins = applied.plugins.filter((plugin) => plugin.fallback === true).map((plugin) => plugin.name);
+  const requiresInstall = fallbackPlugins.length > 0;
+  const installHint = requiresInstall
+    ? `dsh plugin --profile ${profile.name} install`
+    : '';
+
   return {
     action: 'download',
     remotePath: `/${dirSegs.join('/')}`,
@@ -929,6 +938,9 @@ export async function downloadSnapshot(ctx, options) {
     backedUp: applied.backedUp,
     written: applied.written,
     plugins: applied.plugins,
+    fallbackPlugins,
+    requiresInstall,
+    installHint,
     warnings: [...applied.warnings],
     requiresRestart: true,
   };
