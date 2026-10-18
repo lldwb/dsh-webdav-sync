@@ -78,6 +78,37 @@ export const RPC_CHANNEL = '/dsh-webdav-sync';
 /** 默认的 WebDAV 密码凭据引用。 */
 export const DEFAULT_PASSWORD_REF = 'DSH_WEBDAV_SYNC_PASSWORD';
 
+/**
+ * 服务商预设对应的默认 WebDAV 地址（与 client.js 里的服务商下拉保持一致）。
+ *
+ * 只有坚果云有公开固定的 WebDAV 入口；Nextcloud / 群晖的地址带用户自己的域名，
+ * 只能由用户填写，所以留空。
+ */
+export const PROVIDER_PRESET_BASE_URLS = Object.freeze({
+  jianguoyun: 'https://dav.jianguoyun.com/dav/',
+  nextcloud: '',
+  synology: '',
+  custom: '',
+});
+
+/**
+ * 解析实际使用的 WebDAV 地址。
+ *
+ * 显式填了地址就用显式值；否则如果用户选了已知服务商预设（坚果云），就回退到
+ * 该预设的默认地址。这修掉一个真实踩过的坑：服务商下拉只在「手动切换」时写入
+ * 地址，重启后从已保存配置恢复表单时地址栏可能是空的，于是「选了坚果云、账户
+ * 密码都填了」仍然报「尚未配置 WebDAV 服务器地址」。
+ *
+ * @param {object} options 配置快照。
+ * @returns {string} 实际使用的地址（可能为空）。
+ */
+export function resolveBaseUrl(options) {
+  const explicit = typeof options?.baseUrl === 'string' ? options.baseUrl.trim() : '';
+  if (explicit.length > 0) return explicit;
+  const preset = typeof options?.providerPreset === 'string' ? options.providerPreset.trim().toLowerCase() : '';
+  return PROVIDER_PRESET_BASE_URLS[preset] ?? '';
+}
+
 /** 远端布局版本目录（将来协议不兼容时升级）。 */
 export const REMOTE_LAYOUT_VERSION = 'v1';
 
@@ -648,8 +679,13 @@ export function remoteDirDisplay(options) {
  * @returns {Promise<{ webdav: object, dirSegs: string[], options: object }>}
  */
 export async function openSession(ctx, options) {
-  if (!isNonEmptyString(options.baseUrl)) {
-    throw new SyncError('尚未配置 WebDAV 服务器地址，请先在设置页填写并保存', 'NOT_CONFIGURED');
+  // 地址可以是显式填写的，也可以由服务商预设推导（见 resolveBaseUrl）。
+  const baseUrl = resolveBaseUrl(options);
+  if (!isNonEmptyString(baseUrl)) {
+    throw new SyncError(
+      '尚未配置 WebDAV 服务器地址：请选择「服务商」预设（坚果云会自动填地址）或在「WebDAV 服务器地址」里手动填写后保存',
+      'NOT_CONFIGURED',
+    );
   }
   if (!isNonEmptyString(options.username)) {
     throw new SyncError('尚未配置 WebDAV 账户，请先在设置页填写并保存', 'NOT_CONFIGURED');
@@ -664,7 +700,7 @@ export async function openSession(ctx, options) {
   let webdav;
   try {
     webdav = await createWebDav({
-      baseUrl: options.baseUrl,
+      baseUrl,
       username: options.username,
       password,
       timeoutMs: options.timeoutMs,
@@ -914,9 +950,11 @@ export async function buildStatus(ctx, config, runtime) {
   const dshHome = resolveDshHome();
   const state = await readState(dshHome);
   const passwordConfigured = (await resolvePassword(ctx, options.passwordRef).catch(() => undefined)) !== undefined;
+  // 下发给界面的 baseUrl 是「实际生效值」：显式地址优先，否则由服务商预设推导。
+  const baseUrl = resolveBaseUrl(options);
   return {
     version: PLUGIN_VERSION,
-    configured: isNonEmptyString(options.baseUrl) && isNonEmptyString(options.username) && passwordConfigured,
+    configured: isNonEmptyString(baseUrl) && isNonEmptyString(options.username) && passwordConfigured,
     busy: runtime?.busy === true,
     remotePath: remoteDirDisplay(options),
     platform: {
@@ -927,7 +965,8 @@ export async function buildStatus(ctx, config, runtime) {
     config: {
       provider: options.provider,
       providerPreset: options.providerPreset,
-      baseUrl: options.baseUrl,
+      baseUrl,
+      baseUrlFromPreset: !isNonEmptyString(options.baseUrl) && baseUrl.length > 0,
       username: options.username,
       remoteRoot: options.remoteRoot,
       syncProfile: options.syncProfile,
