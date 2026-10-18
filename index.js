@@ -881,11 +881,18 @@ export async function remoteInfo(ctx, options) {
  * 顺序与 CC Switch 一致：artifact 先传、manifest 最后传，这样下载方不会读到
  * 「manifest 已更新但 artifact 还是旧的」的中间态。
  *
+ * `control.allowOverwriteRemote` 决定「远端已被别的设备更新过」时的行为：
+ * - `true`（用户手动点上传，默认）：照常覆盖，但在返回值里报告被覆盖的远端版本；
+ * - `false`（自动同步）：**跳过上传**。本地一次不完整/临时的状态不应该把另一台
+ *   设备刚上传的好数据冲掉 —— 这是沙箱端到端测试里实测到的真实风险。
+ *
  * @param {object} ctx Cordis 上下文。
  * @param {object} options 配置快照。
- * @returns {Promise<object>} 上传结果。
+ * @param {{ allowOverwriteRemote?: boolean }} [control] 覆盖策略。
+ * @returns {Promise<object>} 上传结果，或 `{ skipped: true, reason: 'REMOTE_AHEAD', ... }`。
  */
-export async function uploadSnapshot(ctx, options) {
+export async function uploadSnapshot(ctx, options, control = {}) {
+  const allowOverwriteRemote = control.allowOverwriteRemote !== false;
   const startedAt = Date.now();
   const { webdav, dirSegs } = await openSession(ctx, options);
   const profile = resolveProfileInfo(ctx);
@@ -913,9 +920,10 @@ export async function uploadSnapshot(ctx, options) {
       'REMOTE_UNREADABLE',
     );
   }
+  let remoteManifest = null;
   if (existing !== null) {
     try {
-      parseManifest(existing.bytes);
+      remoteManifest = parseManifest(existing.bytes);
     } catch (error) {
       throw new SyncError(
         `远端已有不兼容的同步数据，为避免覆盖已中止上传。如果确认要覆盖，请先在 WebDAV 上删除 ${dirSegs.join('/')} 目录下的文件。原因: ${error?.message ?? error}`,
@@ -923,6 +931,40 @@ export async function uploadSnapshot(ctx, options) {
       );
     }
   }
+
+  // 远端被别的设备更新过吗？`lastRemoteSnapshotId` 是我们上次看到/写入的远端版本，
+  // 远端当前值与之不同就说明期间有别的设备上传过（CC Switch 的 lastRemoteHash 语义）。
+  const state = await readState(dshHome);
+  const knownRemoteId = typeof state.lastRemoteSnapshotId === 'string' ? state.lastRemoteSnapshotId : '';
+  const remoteAhead =
+    remoteManifest !== null &&
+    knownRemoteId.length > 0 &&
+    remoteManifest.snapshotId !== knownRemoteId &&
+    remoteManifest.snapshotId !== snapshot.snapshotId;
+  if (remoteAhead && !allowOverwriteRemote) {
+    const skippedAt = Math.floor(Date.now() / 1000);
+    await patchState(dshHome, {
+      lastSkipAt: skippedAt,
+      lastSkipReason: 'REMOTE_AHEAD',
+      lastSkipRemoteSnapshotId: remoteManifest.snapshotId,
+      lastSkipRemoteDevice: typeof remoteManifest.deviceName === 'string' ? remoteManifest.deviceName : '',
+    }).catch(() => {});
+    ctx.logger?.warn?.(
+      `[webdav-sync] 自动同步已跳过：远端有来自 ${remoteManifest.deviceName || '其它设备'} 的更新（${String(remoteManifest.snapshotId).slice(0, 8)}），请先「从云端下载」或手动上传覆盖`,
+    );
+    return {
+      action: 'upload',
+      skipped: true,
+      reason: 'REMOTE_AHEAD',
+      remotePath: `/${dirSegs.join('/')}`,
+      remoteSnapshotId: remoteManifest.snapshotId,
+      remoteDeviceName: typeof remoteManifest.deviceName === 'string' ? remoteManifest.deviceName : '',
+      remoteCreatedAt: typeof remoteManifest.createdAt === 'string' ? remoteManifest.createdAt : '',
+      localSnapshotId: snapshot.snapshotId,
+      durationMs: Date.now() - startedAt,
+    };
+  }
+
   await webdav.put([...dirSegs, ARTIFACT_CONFIG], snapshot.configZip.bytes, 'application/zip');
   await webdav.put([...dirSegs, ARTIFACT_PLUGINS], snapshot.pluginsZip.bytes, 'application/zip');
   await webdav.put([...dirSegs, MANIFEST_NAME], snapshot.manifestBytes, 'application/json');
@@ -937,10 +979,22 @@ export async function uploadSnapshot(ctx, options) {
     lastRemoteEtag: head?.etag ?? null,
     lastError: null,
     lastErrorAt: null,
+    lastSkipAt: null,
+    lastSkipReason: null,
+    lastSkipRemoteSnapshotId: null,
+    lastSkipRemoteDevice: null,
   }).catch(() => {});
 
   return {
     action: 'upload',
+    overwroteRemote:
+      remoteAhead && remoteManifest !== null
+        ? {
+            snapshotId: remoteManifest.snapshotId,
+            deviceName: typeof remoteManifest.deviceName === 'string' ? remoteManifest.deviceName : '',
+            createdAt: typeof remoteManifest.createdAt === 'string' ? remoteManifest.createdAt : '',
+          }
+        : null,
     remotePath: `/${dirSegs.join('/')}`,
     snapshotId: snapshot.snapshotId,
     files: snapshot.manifest.fileCount,
@@ -1129,6 +1183,10 @@ export async function buildStatus(ctx, config, runtime) {
       lastErrorAt: Number.isFinite(state.lastErrorAt) ? state.lastErrorAt : null,
       lastLocalSnapshotId: typeof state.lastLocalSnapshotId === 'string' ? state.lastLocalSnapshotId : null,
       lastRemoteSnapshotId: typeof state.lastRemoteSnapshotId === 'string' ? state.lastRemoteSnapshotId : null,
+      // 自动同步因「远端有别的设备的更新」而跳过时，界面要能说清原因。
+      lastSkipAt: Number.isFinite(state.lastSkipAt) ? state.lastSkipAt : null,
+      lastSkipReason: typeof state.lastSkipReason === 'string' ? state.lastSkipReason : null,
+      lastSkipRemoteDevice: typeof state.lastSkipRemoteDevice === 'string' ? state.lastSkipRemoteDevice : null,
     },
   };
 }
@@ -1287,8 +1345,14 @@ export function startAutoSync(ctx, config, runtime) {
       if (lastAttemptSnapshotId === snapshot.snapshotId) return;
       if (state.lastLocalSnapshotId === snapshot.snapshotId) return; // 与上次成功同步一致
       lastAttemptSnapshotId = snapshot.snapshotId;
-      const result = await uploadSnapshot(ctx, options);
-      ctx.logger?.info?.(`[webdav-sync] 自动同步已上传 ${result.files} 个文件（snapshot ${String(result.snapshotId).slice(0, 8)}）`);
+      // 自动同步不允许覆盖「别的设备刚上传的远端版本」：本地状态可能只是暂时的
+      // 不完整（例如刚做过跨机恢复），覆盖会把对方的好数据冲掉。
+      const result = await uploadSnapshot(ctx, options, { allowOverwriteRemote: false });
+      if (result.skipped === true) {
+        ctx.logger?.warn?.('[webdav-sync] 自动同步已跳过（远端有其它设备的更新）');
+      } else {
+        ctx.logger?.info?.(`[webdav-sync] 自动同步已上传 ${result.files} 个文件（snapshot ${String(result.snapshotId).slice(0, 8)}）`);
+      }
     } catch (error) {
       lastAttemptSnapshotId = null; // 失败后允许下一轮轮询重试（60s 轮询天然限流）
       const publicError = toPublicError(error);
