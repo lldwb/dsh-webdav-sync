@@ -43,7 +43,8 @@
  * @module dsh-webdav-sync
  */
 
-import { promises as fs, watch } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, promises as fs, watch } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import z from '@deepseek-ai/schemastery';
@@ -618,6 +619,135 @@ export async function buildLocalSnapshot(options) {
   };
 }
 
+// ─── 依赖安装（跨机恢复的收尾步骤） ────────────────────────────
+
+/** 单次 `pnpm install` 的超时（毫秒）。 */
+const INSTALL_TIMEOUT_MS = 180_000;
+
+/**
+ * 解析一个可用的 pnpm 运行方式。
+ *
+ * 桌面版把自带运行时作为进程参数传给 Host（`.../primary-runtime/dependencies/pnpm/bin/pnpm.mjs`），
+ * 同级还有自带的 `node.exe`；因此优先从 `process.argv` 推断，其次按默认安装路径探测，
+ * 都找不到时返回 `undefined`（调用方退回「让用户手动跑命令」的提示）。
+ *
+ * @returns {{ command: string, args: string[], env?: Record<string, string> } | undefined}
+ */
+export function resolvePnpmRunner() {
+  const isWindows = process.platform === 'win32';
+  const nodeName = isWindows ? 'node.exe' : 'node';
+  const candidates = [];
+  const fromArgv = process.argv.find(
+    (arg) => typeof arg === 'string' && /[\\/]pnpm[\\/]bin[\\/]pnpm\.mjs$/iu.test(arg),
+  );
+  if (typeof fromArgv === 'string') candidates.push(fromArgv);
+  const localAppData = process.env.LOCALAPPDATA;
+  if (typeof localAppData === 'string' && localAppData.length > 0) {
+    candidates.push(
+      path.join(localAppData, 'Programs', 'DeepSeek Harness', 'resources', 'runtime', 'primary-runtime', 'dependencies', 'pnpm', 'bin', 'pnpm.mjs'),
+    );
+  }
+  for (const entry of candidates) {
+    if (!existsSync(entry)) continue;
+    const runtimeRoot = path.dirname(path.dirname(path.dirname(path.dirname(entry))));
+    const nodeExe = path.join(runtimeRoot, 'dependencies', 'node', 'bin', nodeName);
+    if (existsSync(nodeExe)) return { command: nodeExe, args: [entry] };
+    // Electron 可执行文件加 ELECTRON_RUN_AS_NODE 也能当 node 用。
+    return { command: process.execPath, args: [entry], env: { ELECTRON_RUN_AS_NODE: '1' } };
+  }
+  return undefined;
+}
+
+/**
+ * 跑一个子进程并收集输出（带超时）。
+ *
+ * @param {{ command: string, args: string[], env?: Record<string, string> }} runner
+ * @param {string[]} args 追加参数。
+ * @param {string} cwd 工作目录。
+ * @param {number} timeoutMs 超时。
+ * @returns {Promise<{ code: number, output: string }>}
+ */
+function spawnCapture(runner, args, cwd, timeoutMs) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(runner.command, [...runner.args, ...args], {
+        cwd,
+        env: { ...process.env, ...(runner.env ?? {}) },
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      resolve({ code: -1, output: String(error?.message ?? error) });
+      return;
+    }
+    let output = '';
+    const append = (chunk) => {
+      output = (output + chunk.toString('utf8')).slice(-4000);
+    };
+    child.stdout?.on('data', append);
+    child.stderr?.on('data', append);
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        // 忽略
+      }
+    }, timeoutMs);
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      resolve({ code: -1, output: `${output}\n${error?.message ?? error}` });
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code: typeof code === 'number' ? code : -1, output });
+    });
+  });
+}
+
+/**
+ * 跨机恢复后自动安装依赖。
+ *
+ * 顺序：先 profile（建立 `node_modules` 链接），再每个回退到 profile 内的插件目录
+ * （装插件自身的依赖，例如 `@deepseek-ai/schemastery`）。任一失败都不抛出，只把结果
+ * 带回去让界面提示手动命令。
+ *
+ * @param {object} ctx Cordis 上下文。
+ * @param {{ profileDir: string, pluginDirs: string[] }} input
+ * @returns {Promise<{ attempted: boolean, ok: boolean, reason?: string, results: Array<object> }>}
+ */
+export async function installFallbackDependencies(ctx, input) {
+  const runner = resolvePnpmRunner();
+  if (runner === undefined) {
+    return {
+      attempted: false,
+      ok: false,
+      reason: '未找到 DSH 自带的 pnpm，请手动在 profile 目录运行依赖安装',
+      results: [],
+    };
+  }
+  const targets = [
+    { label: 'profile', dir: input.profileDir },
+    ...input.pluginDirs.map((dir) => ({ label: path.basename(dir), dir })),
+  ];
+  const results = [];
+  for (const target of targets) {
+    const startedAt = Date.now();
+    const { code, output } = await spawnCapture(runner, ['install'], target.dir, INSTALL_TIMEOUT_MS);
+    const item = {
+      target: target.label,
+      dir: target.dir,
+      ok: code === 0,
+      code,
+      durationMs: Date.now() - startedAt,
+      output: output.slice(-600),
+    };
+    results.push(item);
+    ctx.logger?.info?.(`[webdav-sync] 依赖安装 ${target.label}: ${item.ok ? 'ok' : `failed(${code})`}`);
+  }
+  return { attempted: true, ok: results.every((item) => item.ok), results };
+}
+
 /** 当前机器的设备名（manifest 里展示用）。 */
 export function detectDeviceName() {
   const candidates = [process.env.COMPUTERNAME, process.env.HOSTNAME, os.hostname()];
@@ -916,12 +1046,17 @@ export async function downloadSnapshot(ctx, options) {
 
   // 跨机恢复时插件会回退到 profile 内 `plugins/<包名>` 并改写依赖；DSH 还需要一次
   // 依赖安装才会把这些包链接进 node_modules，否则插件管理器会报「包不可用」。
-  // 这里把「需要安装」和要跑的命令显式带回给界面。
+  // 这里自动跑一次安装（profile + 每个回退插件目录），失败时把命令带回给界面。
   const fallbackPlugins = applied.plugins.filter((plugin) => plugin.fallback === true).map((plugin) => plugin.name);
   const requiresInstall = fallbackPlugins.length > 0;
   const installHint = requiresInstall
     ? `dsh plugin --profile ${profile.name} install`
     : '';
+  let install = { attempted: false, ok: false, results: [] };
+  if (requiresInstall) {
+    const pluginDirs = applied.plugins.filter((plugin) => plugin.fallback === true).map((plugin) => plugin.dir);
+    install = await installFallbackDependencies(ctx, { profileDir: profile.dir, pluginDirs });
+  }
 
   return {
     action: 'download',
@@ -941,6 +1076,7 @@ export async function downloadSnapshot(ctx, options) {
     fallbackPlugins,
     requiresInstall,
     installHint,
+    install,
     warnings: [...applied.warnings],
     requiresRestart: true,
   };
