@@ -1,0 +1,21 @@
+# dsh-webdav-sync —— Loader 补丁层。
+#
+# 插入一行 Host 插件（id 同时是设置命名空间）。`config` 会被 id 定向 patch
+# 整块替换，因此这里把每个字段都写全；用户想在 profile 层覆盖时必须重述全部字段。
+- insert:
+    - id: webdav-sync
+      name: dsh-webdav-sync
+      config:
+        provider: webdav
+        providerPreset: custom
+        baseUrl: ''
+        username: ''
+        passwordRef: DSH_WEBDAV_SYNC_PASSWORD
+        remoteRoot: dsh-sync
+        syncProfile: default
+        autoSync: true
+        syncCredentials: true
+        timeoutMs: 30000
+        maxArtifactBytes: 67108864
+        maxPluginBytes: 20971520
+        backupKeep: 5

@@ -1,0 +1,10 @@
+{
+  "meta": {
+    "title": "WebDAV cloud sync",
+    "description": "Sync DeepSeek Harness configuration and plugins across devices over WebDAV, without sessions."
+  },
+  "settings": {
+    "title": "WebDAV cloud sync",
+    "description": "Sync configuration and plugins across devices over WebDAV, without sessions."
+  }
+}
