@@ -88,15 +88,23 @@ plugins.zip       # 插件包快照（<包名>/... + _plugins.json 记录原路�
 
 - 默认会把 `.credentials.yaml` 一起同步（否则换机后所有 API 密钥都要重填）。它包含**明文凭据**，WebDAV 服务端可以看到。如果你的 WebDAV 服务不可信，请在 `cordis.patch.yml` 里把 `syncCredentials` 设为 `false`。
 - WebDAV 密码存在 DSH 凭据库（`.credentials.yaml`）中，**不会**写进 profile 的 `cordis.patch.yml`，也不会出现在日志里。注意它仍会随 `syncCredentials` 被同步到云端（这是「配置」的一部分）。
-- 下载会覆盖本地配置；下载前会自动备份，备份目录见上。
+- 下载会覆盖本地配置；下载前会自动备份，备份目录见上。**重启 DSH 后生效。**
+- **下载端有路径防护**：
+  - 只允许恢复白名单内的配置文件（profile 的 5 个配置文件，home 的 `.credentials.yaml` / `settings.yaml` / `settings.json`）；zip 里其它路径（`sessions/`、`node_modules/` 等）一律忽略并记 warning。
+  - 目标父目录用 `realpath` 做二次校验，Windows junction / symlink 无法把写入引出目标根。
+  - 插件包写回位置**只信本地 profile 的依赖声明**（`link:` / `file:`），快照里记录的 `originalDir` 只作提示；系统目录（`C:\Windows`、`Program Files` 等）一律拒绝，失败时回退到 `<profile>/plugins/<包名>` 并改写依赖。
+  - 拒绝含 `:`（ADS）、以 `.`/空格结尾、以及 Windows 保留设备名（`CON`/`NUL` 等）的 zip 条目名。
+- 上传前会先读远端 `manifest.json`：协议版本不兼容时**拒绝覆盖**并给出提示。
 - 建议使用 WebDAV 的专用应用密码（坚果云等），不要使用主账号密码。
 
 ## 限制与已知问题
 
 - **下载后需要重启 DSH 才生效**：插件配置在启动时读取，运行中的进程不会重读被覆盖的配置文件。
-- **只监听 profile 与 home 配置的变化**：`link:` 插件包的源码目录可能在本机其他位置，其文件变化不会触发自动同步，需要手动点「上传到云端」。
+- **自动同步只上传、不自动下载**：多台设备同时改配置时以「最后上传者」为准，不会合并。要拉取另一台设备的改动，请手动点「从云端下载」。
+- **只监听 profile 与 home 配置的变化**：`link:` 插件包的源码目录可能在本机其他位置，且 Windows 的 `fs.watch` 不跟随 junction / 符号链接，这类改动不会即时触发自动同步，最多等 60 秒兜底轮询，或手动点「上传到云端」。
 - **跨机器恢复插件包**：若原插件目录不存在，会回退到 profile 内 `plugins/<包名>`，但 profile 的 `node_modules` 链接需要重新安装依赖后才会指向新位置（重启 + `pnpm install`）。
-- **同一时刻只允许一个同步动作**（上传/下载/测试互斥）。
+- **同一时刻只允许一个同步动作**（上传/下载/测试/自动同步互斥）。
+- **解压上限独立于下载上限**：zip 解压有固定的单条目/总量上限（防压缩炸弹），调大 `maxArtifactBytes` 不会放大解压上限。
 - 远端协议版本不匹配（例如未来升级）时会明确报错，不会覆盖。
 - 坚果云等部分服务对顶层目录删除有限制；本插件不会删除远端目录，只覆盖三个文件。
 

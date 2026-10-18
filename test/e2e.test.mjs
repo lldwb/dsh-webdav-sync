@@ -10,11 +10,14 @@
  */
 
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { mkdtemp, mkdir, readFile, rm, writeFile, readdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
+
+import { applySnapshot } from '../lib/apply.mjs';
 
 import {
   buildLocalSnapshot,
@@ -290,10 +293,11 @@ test('downloadSnapshot：恢复远端内容、写备份、保留本地新增文�
   const restored = await readFile(path.join(fixtures.profileDir, 'cordis.patch.yml'), 'utf8');
   assert.equal(restored, '- id: demo\n  name: demo-plugin\n', '应恢复为远端快照内容');
 
-  // 备份目录里应有被覆盖文件的副本
-  const backupFiles = await readdir(fixtures.root, { recursive: true });
-  void backupFiles;
-  assert.ok(stat !== undefined);
+  // 备份目录里应有被覆盖文件的副本（旧内容），且路径与 zip 内相对路径一致
+  const backedPatch = await readFile(path.join(result.backupDir, 'profile', 'cordis.patch.yml'), 'utf8');
+  assert.equal(backedPatch, '- id: changed\n', '备份里应是被覆盖前的旧内容');
+  const backedCredentials = await readFile(path.join(result.backupDir, 'home', '.credentials.yaml'), 'utf8');
+  assert.match(backedCredentials, /DEMO_KEY/u);
 
   // 插件包写回原路径
   const pluginEntry = result.plugins.find((item) => item.name === 'demo-plugin');
@@ -368,4 +372,160 @@ test('patchState：状态合并写盘', async () => {
   assert.equal(state.lastError, 'boom');
   assert.equal(state.lastErrorAt, 123);
   assert.equal(typeof state.lastSyncAt, 'number');
+});
+
+// ─── 安全与兼容性用例（独立 fixture，顺序不依赖上面的远端状态） ───
+
+/** 造一份只含 profile/home 目录的临时夹具。 */
+async function makeApplyFixture() {
+  const root = await mkdtemp(path.join(tmpdir(), 'dsh-webdav-apply-'));
+  const profileDir = path.join(root, 'profile');
+  const dshHome = path.join(root, 'home');
+  await mkdir(profileDir, { recursive: true });
+  await mkdir(dshHome, { recursive: true });
+  await writeFile(path.join(profileDir, 'package.json'), '{"name":"p","dependencies":{}}\n');
+  return { root, profileDir, dshHome, backupsRoot: path.join(dshHome, 'webdav-sync', 'backups') };
+}
+
+test('downloadSnapshot：artifact 校验失败时中止且不写本地文件', async () => {
+  const key = '/dav/dsh-sync/v1/default/config.zip';
+  const entry = fixtures.files.get(key);
+  assert.ok(entry !== undefined, '前序上传应已写入 config.zip');
+  const tampered = Buffer.from(entry.bytes);
+  tampered[tampered.length - 1] ^= 0xff;
+  fixtures.files.set(key, { bytes: tampered, etag: '"tampered"' });
+
+  const patchBefore = await readFile(path.join(fixtures.profileDir, 'cordis.patch.yml'), 'utf8');
+  await assert.rejects(downloadSnapshot(fixtures.ctx, fixtures.options), /校验|sha256|大小/iu);
+  assert.equal(
+    await readFile(path.join(fixtures.profileDir, 'cordis.patch.yml'), 'utf8'),
+    patchBefore,
+    '校验失败时不应写入任何本地文件',
+  );
+});
+
+test('uploadSnapshot：远端 manifest 协议不兼容时拒绝覆盖', async () => {
+  const dir = '/dav/dsh-sync/v1/default';
+  fixtures.files.set(`${dir}/manifest.json`, {
+    bytes: Buffer.from(JSON.stringify({ format: 'dsh-webdav-sync', protocolVersion: 2, artifacts: {} })),
+    etag: '"v2"',
+  });
+  await assert.rejects(
+    uploadSnapshot(fixtures.ctx, fixtures.options),
+    (error) => error?.code === 'MANIFEST_INCOMPATIBLE',
+  );
+});
+
+test('applySnapshot：配置文件白名单（拒绝 sessions/node_modules 等路径）', async () => {
+  const fx = await makeApplyFixture();
+  try {
+    const result = await applySnapshot({
+      configEntries: [
+        { name: 'profile/package.json', bytes: Buffer.from('{"name":"p"}\n') },
+        { name: 'profile/sessions/evil.json', bytes: Buffer.from('{}') },
+        { name: 'home/sessions/evil.json', bytes: Buffer.from('{}') },
+        { name: 'home/.credentials.yaml', bytes: Buffer.from('version: 1\n') },
+      ],
+      pluginEntries: [],
+      pluginList: [],
+      profileDir: fx.profileDir,
+      dshHome: fx.dshHome,
+      backupsRoot: fx.backupsRoot,
+      backupKeep: 2,
+    });
+    assert.equal(result.warnings.some((warning) => warning.includes('profile/sessions/evil.json')), true);
+    assert.equal(result.warnings.some((warning) => warning.includes('home/sessions/evil.json')), true);
+    assert.equal(existsSync(path.join(fx.profileDir, 'sessions', 'evil.json')), false);
+    assert.equal(existsSync(path.join(fx.dshHome, 'sessions', 'evil.json')), false);
+    assert.equal(await readFile(path.join(fx.dshHome, '.credentials.yaml'), 'utf8'), 'version: 1\n');
+  } finally {
+    await rm(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('applySnapshot：远端 _plugins.json 的 originalDir 不被直接采用', async () => {
+  const fx = await makeApplyFixture();
+  const outside = path.join(fx.root, 'outside');
+  await mkdir(outside, { recursive: true });
+  try {
+    const result = await applySnapshot({
+      configEntries: [],
+      pluginEntries: [
+        { name: 'demo/index.js', bytes: Buffer.from('evil\n') },
+        { name: '_plugins.json', bytes: Buffer.from(JSON.stringify([{ name: 'demo', originalDir: outside }])) },
+      ],
+      pluginList: [{ name: 'demo', originalDir: outside }],
+      profileDir: fx.profileDir,
+      dshHome: fx.dshHome,
+      backupsRoot: fx.backupsRoot,
+      backupKeep: 2,
+    });
+    assert.equal(result.plugins[0].fallback, true, '本地未声明该依赖时必须回退到 profile 内');
+    assert.equal(await readFile(path.join(fx.profileDir, 'plugins', 'demo', 'index.js'), 'utf8'), 'evil\n');
+    assert.equal(existsSync(path.join(outside, 'index.js')), false, '不能写到远端指定的任意路径');
+    const manifest = JSON.parse(await readFile(path.join(fx.profileDir, 'package.json'), 'utf8'));
+    assert.equal(manifest.dependencies.demo, 'link:./plugins/demo');
+  } finally {
+    await rm(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('applySnapshot：插件目标禁止系统目录（回退到 profile 内）', async (t) => {
+  const systemRoot = process.env.SystemRoot;
+  if (systemRoot === undefined) {
+    t.skip('非 Windows 环境，跳过系统目录用例');
+    return;
+  }
+  const fx = await makeApplyFixture();
+  try {
+    await writeFile(
+      path.join(fx.profileDir, 'package.json'),
+      JSON.stringify({ name: 'p', dependencies: { demo: `link:${systemRoot}` } }),
+    );
+    const result = await applySnapshot({
+      configEntries: [],
+      pluginEntries: [
+        { name: 'demo/index.js', bytes: Buffer.from('evil\n') },
+        { name: '_plugins.json', bytes: Buffer.from(JSON.stringify([{ name: 'demo', originalDir: systemRoot }])) },
+      ],
+      pluginList: [{ name: 'demo', originalDir: systemRoot }],
+      profileDir: fx.profileDir,
+      dshHome: fx.dshHome,
+      backupsRoot: fx.backupsRoot,
+      backupKeep: 2,
+    });
+    assert.equal(result.plugins[0].fallback, true);
+    assert.equal(existsSync(path.join(systemRoot, 'demo')), false);
+  } finally {
+    await rm(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('applySnapshot：跨机恢复（依赖指向不存在目录）后本地快照 id 与原 id 不同', async () => {
+  // 这条用例守护自动同步的去重语义：跨机恢复会改写依赖，本地内容与远端不同，
+  // 因此 index.js 在下载后要重建快照再写 lastLocalSnapshotId，而不是直接写远端 id。
+  const fx = await makeApplyFixture();
+  try {
+    await writeFile(
+      path.join(fx.profileDir, 'package.json'),
+      JSON.stringify({ name: 'p', dependencies: { demo: 'link:Z:/definitely/not/exists' } }),
+    );
+    const result = await applySnapshot({
+      configEntries: [],
+      pluginEntries: [
+        { name: 'demo/index.js', bytes: Buffer.from('x\n') },
+        { name: '_plugins.json', bytes: Buffer.from(JSON.stringify([{ name: 'demo', originalDir: 'Z:/definitely/not/exists' }])) },
+      ],
+      pluginList: [{ name: 'demo', originalDir: 'Z:/definitely/not/exists' }],
+      profileDir: fx.profileDir,
+      dshHome: fx.dshHome,
+      backupsRoot: fx.backupsRoot,
+      backupKeep: 2,
+    });
+    assert.equal(result.plugins[0].fallback, true);
+    const manifest = JSON.parse(await readFile(path.join(fx.profileDir, 'package.json'), 'utf8'));
+    assert.equal(manifest.dependencies.demo, 'link:./plugins/demo');
+  } finally {
+    await rm(fx.root, { recursive: true, force: true });
+  }
 });
