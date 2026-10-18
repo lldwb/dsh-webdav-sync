@@ -103,7 +103,19 @@ plugins.zip       # 插件包快照（<包名>/... + _plugins.json 记录原路�
 - **下载后需要重启 DSH 才生效**：插件配置在启动时读取，运行中的进程不会重读被覆盖的配置文件。
 - **自动同步只上传、不自动下载**：多台设备同时改配置时以「最后上传者」为准，不会合并。要拉取另一台设备的改动，请手动点「从云端下载」。
 - **只监听 profile 与 home 配置的变化**：`link:` 插件包的源码目录可能在本机其他位置，且 Windows 的 `fs.watch` 不跟随 junction / 符号链接，这类改动不会即时触发自动同步，最多等 60 秒兜底轮询，或手动点「上传到云端」。
-- **跨机器恢复插件包**：若原插件目录不存在，会回退到 profile 内 `plugins/<包名>`，但 profile 的 `node_modules` 链接需要重新安装依赖后才会指向新位置（重启 + `pnpm install`）。
+- **跨机器恢复插件包**：若原插件目录不存在（换机器/换盘符），插件会回退到 `<profile>/plugins/<包名>`，依赖改写成 `link:./plugins/<包名>`。此时**还要在目标机器上装一次依赖**，否则插件管理器会显示「包不可用 / cannot resolve profile bundle」：
+
+  ```powershell
+  # 1) 建立 profile 的依赖链接（DSH 自带 pnpm，无需另装）
+  & "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop install
+
+  # 2) 给每个恢复到 profile 内的插件装它自己的依赖（例如 dsh-web-search-opencode-ds 需要 schemastery）
+  Get-ChildItem "$env:USERPROFILE\.dsh\profiles\desktop\plugins" -Directory | ForEach-Object {
+    Push-Location $_.FullName; npm install; Pop-Location
+  }
+  ```
+
+  然后重启 DSH。下载结果里也会显示第一条命令（`requiresInstall` / `installHint`），设置页会把它直接写在成功提示里。
 - **同一时刻只允许一个同步动作**（上传/下载/测试/自动同步互斥）。
 - **解压上限独立于下载上限**：zip 解压有固定的单条目/总量上限（防压缩炸弹），调大 `maxArtifactBytes` 不会放大解压上限。
 - 远端协议版本不匹配（例如未来升级）时会明确报错，不会覆盖。
@@ -117,6 +129,7 @@ plugins.zip       # 插件包快照（<包名>/... + _plugins.json 记录原路�
 | 401 / 403 | 坚果云请用「第三方应用密码」；确认地址在 `/dav/` 下且可写 |
 | MKCOL 409 / 顶层目录创建失败 | 在 WebDAV 网页端手动创建「远程根目录」后重试 |
 | 下载后界面没变化 | 重启 DSH |
+| 插件列表里出现「异常 / 包不可用」（跨机恢复后） | 见上面「跨机器恢复插件包」：先在目标机器跑 `dsh plugin --profile desktop install`，再给 `<profile>/plugins/*` 里的插件各跑一次 `npm install`，然后重启 |
 | 想回滚一次下载 | 把 `$DSH_HOME/webdav-sync/backups/<时间戳>/` 里的文件复制回去 |
 | 配置文件写坏了 | 同上，或从备份目录恢复后重启 |
 
