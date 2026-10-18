@@ -61,7 +61,7 @@ import {
   parseManifest,
   verifyArtifact,
 } from './lib/snapshot.mjs';
-import { applySnapshot, readPluginList, writeFileAtomic } from './lib/apply.mjs';
+import { applySnapshot, ApplyError, readPluginList, writeFileAtomic } from './lib/apply.mjs';
 
 // ─── 常量 ────────────────────────────────────────────────────
 
@@ -308,6 +308,7 @@ export class SyncError extends Error {
 export function toPublicError(error) {
   if (error instanceof SyncError) return { code: error.code, message: error.message };
   if (error instanceof WebDavError) return { code: error.code, message: error.message };
+  if (error instanceof ApplyError) return { code: error.code, message: error.message };
   const message = error instanceof Error ? error.message : String(error);
   return { code: 'SYNC_FAILED', message };
 }
@@ -694,6 +695,19 @@ export async function uploadSnapshot(ctx, options) {
   });
 
   await webdav.ensureDirectories(dirSegs);
+  // 上传前先看远端 manifest：存在但协议不兼容时拒绝覆盖（设计 §2），
+  // 避免把未来版本/其它工具的同步数据静默冲掉。
+  const existing = await webdav.get([...dirSegs, MANIFEST_NAME], MAX_MANIFEST_BYTES).catch(() => null);
+  if (existing !== null) {
+    try {
+      parseManifest(existing.bytes);
+    } catch (error) {
+      throw new SyncError(
+        `远端已有不兼容的同步数据，为避免覆盖已中止上传。如果确认要覆盖，请先在 WebDAV 上删除 ${dirSegs.join('/')} 目录下的文件。原因: ${error?.message ?? error}`,
+        'MANIFEST_INCOMPATIBLE',
+      );
+    }
+  }
   await webdav.put([...dirSegs, ARTIFACT_CONFIG], snapshot.configZip.bytes, 'application/zip');
   await webdav.put([...dirSegs, ARTIFACT_PLUGINS], snapshot.pluginsZip.bytes, 'application/zip');
   await webdav.put([...dirSegs, MANIFEST_NAME], snapshot.manifestBytes, 'application/json');
@@ -739,7 +753,12 @@ export async function downloadSnapshot(ctx, options) {
   if (manifestFile === null) {
     throw new SyncError('远端没有可下载的同步数据（manifest.json 不存在）', 'REMOTE_EMPTY');
   }
-  const manifest = parseManifest(manifestFile.bytes);
+  let manifest;
+  try {
+    manifest = parseManifest(manifestFile.bytes);
+  } catch (error) {
+    throw new SyncError(`远端 manifest 不兼容: ${error?.message ?? error}`, 'MANIFEST_INCOMPATIBLE');
+  }
 
   const configFile = await webdav.get([...dirSegs, ARTIFACT_CONFIG], options.maxArtifactBytes);
   if (configFile === null) {
@@ -756,21 +775,49 @@ export async function downloadSnapshot(ctx, options) {
   const configEntries = zipRead(configFile.bytes);
   const pluginEntries = zipRead(pluginsFile.bytes);
   const pluginList = readPluginList(pluginEntries);
-  const applied = await applySnapshot({
-    configEntries,
-    pluginEntries,
-    pluginList,
-    profileDir: profile.dir,
-    dshHome,
-    backupsRoot: backupsRoot(dshHome),
-    backupKeep: options.backupKeep,
-  });
+  let applied;
+  try {
+    applied = await applySnapshot({
+      configEntries,
+      pluginEntries,
+      pluginList,
+      profileDir: profile.dir,
+      dshHome,
+      backupsRoot: backupsRoot(dshHome),
+      backupKeep: options.backupKeep,
+    });
+  } catch (error) {
+    if (error instanceof ApplyError) {
+      error.message = `${error.message}（已覆盖文件的备份在 ${backupsRoot(dshHome)}）`;
+    }
+    throw error;
+  }
+
+  // 下载后重建本地快照，记录「恢复后本地内容」的真实 id。
+  // 跨机恢复（插件目录回退到 profile 内、依赖被改写）会让本地快照与远端不同；
+  // 此时若仍把远端 id 当成 lastLocalSnapshotId，自动同步会立刻上传本机适配版
+  // 覆盖远端。重建失败就退化为远端 id（并只在日志里提示）。
+  let localSnapshotId = manifest.snapshotId;
+  try {
+    const rebuilt = await buildLocalSnapshot({
+      profileDir: profile.dir,
+      dshHome,
+      profileName: profile.name,
+      deviceName: detectDeviceName(),
+      dshVersion: '',
+      syncCredentials: options.syncCredentials,
+      maxPluginBytes: options.maxPluginBytes,
+    });
+    localSnapshotId = rebuilt.snapshotId;
+  } catch (error) {
+    ctx.logger?.warn?.(`[webdav-sync] 下载后重建本地快照失败，自动同步可能误判一次: ${error?.message ?? error}`);
+  }
 
   const now = Math.floor(Date.now() / 1000);
   await patchState(dshHome, {
     lastSyncAt: now,
     lastSuccess: 'download',
-    lastLocalSnapshotId: manifest.snapshotId,
+    lastLocalSnapshotId: localSnapshotId,
     lastRemoteSnapshotId: manifest.snapshotId,
     lastRemoteEtag: manifestFile.etag ?? null,
     lastError: null,
@@ -781,6 +828,8 @@ export async function downloadSnapshot(ctx, options) {
     action: 'download',
     remotePath: `/${dirSegs.join('/')}`,
     snapshotId: manifest.snapshotId,
+    localSnapshotId,
+    adapted: localSnapshotId !== manifest.snapshotId,
     deviceName: manifest.deviceName,
     createdAt: manifest.createdAt,
     files: manifest.fileCount,
@@ -876,8 +925,8 @@ export function createRpcHandler(ctx, config, runtime) {
 
   return async (endpoint, payload, signal) => {
     if (signal?.aborted === true) return fail('ABORTED', '请求已取消');
-    const options = resolveOptions(ctx, config);
     try {
+      const options = resolveOptions(ctx, config);
       switch (endpoint) {
         case 'status':
           return ok(await buildStatus(ctx, config, runtime));
@@ -895,13 +944,22 @@ export function createRpcHandler(ctx, config, runtime) {
     } catch (error) {
       const publicError = toPublicError(error);
       if (endpoint !== 'status') {
-        const dshHome = resolveDshHome();
-        await patchState(dshHome, {
-          lastError: publicError.message,
-          lastErrorAt: Math.floor(Date.now() / 1000),
-          lastErrorSource: endpoint,
-        }).catch(() => {});
-        ctx.logger?.warn?.(`[webdav-sync] ${endpoint} 失败: ${publicError.message}`);
+        // 状态写入或日志失败绝不能吞掉真正的错误响应。
+        try {
+          const dshHome = resolveDshHome();
+          await patchState(dshHome, {
+            lastError: publicError.message,
+            lastErrorAt: Math.floor(Date.now() / 1000),
+            lastErrorSource: endpoint,
+          });
+        } catch {
+          // 忽略
+        }
+        try {
+          ctx.logger?.warn?.(`[webdav-sync] ${endpoint} 失败: ${publicError.message}`);
+        } catch {
+          // 忽略
+        }
       }
       return fail(publicError.code, publicError.message);
     }
@@ -961,11 +1019,16 @@ export function startAutoSync(ctx, config, runtime) {
     if (disposed) return;
     const options = resolveOptions(ctx, config);
     if (!options.autoSync) return;
+    // 配置还不完整时保持静默：不能把「用户还没填 WebDAV」写成一条自动同步错误。
+    if (!isNonEmptyString(options.baseUrl) || !isNonEmptyString(options.username)) return;
+    if ((await resolvePassword(ctx, options.passwordRef).catch(() => undefined)) === undefined) return;
     if (runtime.busy) {
       // 手动操作进行中：稍后再试，但不无限循环
       schedule();
       return;
     }
+    // 自动上传与手动操作共享 busy 标记，避免两路 uploadSnapshot 交错 PUT。
+    runtime.busy = true;
     try {
       const state = await readState(dshHome);
       const snapshot = await buildLocalSnapshot({
@@ -986,6 +1049,7 @@ export function startAutoSync(ctx, config, runtime) {
       const result = await uploadSnapshot(ctx, options);
       ctx.logger?.info?.(`[webdav-sync] 自动同步已上传 ${result.files} 个文件（snapshot ${String(result.snapshotId).slice(0, 8)}）`);
     } catch (error) {
+      lastAttemptSnapshotId = null; // 失败后允许下一轮轮询重试（60s 轮询天然限流）
       const publicError = toPublicError(error);
       ctx.logger?.warn?.(`[webdav-sync] 自动同步失败: ${publicError.message}`);
       await patchState(dshHome, {
@@ -993,6 +1057,8 @@ export function startAutoSync(ctx, config, runtime) {
         lastErrorAt: Math.floor(Date.now() / 1000),
         lastErrorSource: 'auto',
       }).catch(() => {});
+    } finally {
+      runtime.busy = false;
     }
   };
 
