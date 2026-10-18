@@ -1,0 +1,10 @@
+{
+  "meta": {
+    "title": "WebDAV 云同步",
+    "description": "通过 WebDAV 在多设备之间同步 DeepSeek Harness 的配置与插件，不包含会话。"
+  },
+  "settings": {
+    "title": "WebDAV 云同步",
+    "description": "通过 WebDAV 在多设备之间同步配置与插件，不包含会话。"
+  }
+}
