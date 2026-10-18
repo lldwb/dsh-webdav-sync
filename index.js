@@ -742,7 +742,8 @@ export async function uploadSnapshot(ctx, options) {
     existing = await webdav.get([...dirSegs, MANIFEST_NAME], MAX_MANIFEST_BYTES);
   } catch (error) {
     throw new SyncError(
-      `读取远端 manifest 失败，为避免覆盖已有数据已中止上传: ${error?.message ?? error}`,
+      `读取远端 manifest 失败，为避免覆盖已有数据已中止上传: ${error?.message ?? error}。` +
+        '如果远端目录尚不存在，请先在 WebDAV 网页端创建「远程根目录」后重试。',
       'REMOTE_UNREADABLE',
     );
   }
