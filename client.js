@@ -81,6 +81,10 @@ window.__ModuleLoader__.load({
       statusIdle: 'idle',
       statusBusy: 'syncing…',
       statusFailed: 'failed: ',
+      statusSkippedRemoteAhead: 'auto sync skipped: remote has a newer upload from ',
+      unknownDevice: 'another device',
+      uploadOverwroteRemote: '; overwrote a newer remote upload from ',
+      downloadSkippedRemote: ' (remote unchanged)',
       remotePathLabel: 'Remote directory',
       localProfileLabel: 'Local profile',
       statusUnavailable: 'Sync status unavailable',
@@ -163,6 +167,10 @@ window.__ModuleLoader__.load({
       statusIdle: '空闲',
       statusBusy: '同步中…',
       statusFailed: '失败：',
+      statusSkippedRemoteAhead: '自动同步已跳过：远端有更新的上传，来自 ',
+      unknownDevice: '其它设备',
+      uploadOverwroteRemote: '；已覆盖远端来自 ',
+      downloadSkippedRemote: '（远端未变化）',
       remotePathLabel: '远端目录',
       localProfileLabel: '本地配置',
       statusUnavailable: '无法读取同步状态',
@@ -594,6 +602,12 @@ window.__ModuleLoader__.load({
       const statusError = state.statusError;
       const serverState = status && status.state ? status.state : undefined;
       const lastSyncAt = serverState && typeof serverState.lastSyncAt === 'number' ? serverState.lastSyncAt : 0;
+      // 自动同步因「远端有别的设备的更新」跳过时，状态区要说明原因，否则用户会
+      // 以为自动同步坏了（沙箱端到端测试暴露的场景）。
+      const skipReason =
+        serverState && serverState.lastSkipReason === 'REMOTE_AHEAD'
+          ? `${t('statusSkippedRemoteAhead')}${serverState.lastSkipRemoteDevice || t('unknownDevice')}`
+          : '';
 
       let statusText;
       if (status === null && statusError !== '') {
@@ -602,6 +616,8 @@ window.__ModuleLoader__.load({
         statusText = t('statusBusy');
       } else if (serverState && typeof serverState.lastError === 'string' && serverState.lastError !== '') {
         statusText = `${t('statusFailed')}${serverState.lastError}`;
+      } else if (skipReason !== '') {
+        statusText = skipReason;
       } else {
         statusText = t('statusIdle');
       }
@@ -1138,7 +1154,15 @@ window.__ModuleLoader__.load({
           return latency === '' ? this.t('testSuccess') : `${this.t('testSuccess')}${this.t('summaryJoin')}${latency}`;
         }
         if (endpoint === 'upload') {
-          return `${this.t('uploadSuccess')}${summarySuffix(this.t, value)}${warningsSuffix(this.t, value)}`;
+          // 远端被别的设备更新过时，手动上传会覆盖它 —— 明确告诉用户覆盖了谁的版本。
+          const overwrote =
+            value && value.overwroteRemote
+              ? `${this.t('uploadOverwroteRemote')}${value.overwroteRemote.deviceName || this.t('unknownDevice')}`
+              : '';
+          if (value && value.skipped === true) {
+            return `${this.t('statusSkippedRemoteAhead')}${value.remoteDeviceName || this.t('unknownDevice')}`;
+          }
+          return `${this.t('uploadSuccess')}${summarySuffix(this.t, value)}${warningsSuffix(this.t, value)}${overwrote}`;
         }
         if (endpoint === 'download') {
           // 跨机恢复：插件落到 <profile>/plugins，DSH 还需要一次依赖安装才能解析它们。

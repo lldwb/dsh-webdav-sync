@@ -626,3 +626,55 @@ test('openSession：地址为空但选了坚果云预设时仍可建立会话', 
     (error) => error?.code === 'NOT_CONFIGURED',
   );
 });
+
+test('uploadSnapshot：远端被别的设备更新过时，自动同步跳过、手动上传覆盖并报告', async () => {
+  const dir = '/dav/dsh-sync/v1/default';
+  // mock 是跨测试共享的，前面「协议不兼容」用例往里塞了 protocolVersion=2 的
+  // manifest；这里先清空远端，从一个干净基线开始。
+  for (const name of ['manifest.json', 'config.zip', 'plugins.zip']) fixtures.files.delete(`${dir}/${name}`);
+  // 基线：先上传一次，让 state.lastRemoteSnapshotId 等于远端当前版本。
+  const first = await uploadSnapshot(fixtures.ctx, fixtures.options);
+  assert.equal(first.action, 'upload');
+  assert.equal(first.skipped, undefined);
+
+  // 模拟另一台设备上传了快照 B：直接改 mock 里的 manifest（等价于远端被改动）。
+  const entry = fixtures.files.get(`${dir}/manifest.json`);
+  const remote = JSON.parse(entry.bytes.toString('utf8'));
+  remote.snapshotId = 'b'.repeat(64);
+  remote.deviceName = 'OTHER-PC';
+  remote.createdAt = '2026-10-19T00:00:00.000Z';
+  entry.bytes = Buffer.from(JSON.stringify(remote), 'utf8');
+
+  // 自动同步（allowOverwriteRemote=false）：跳过，绝不覆盖别的设备的数据。
+  const skipped = await uploadSnapshot(fixtures.ctx, fixtures.options, { allowOverwriteRemote: false });
+  assert.equal(skipped.skipped, true);
+  assert.equal(skipped.reason, 'REMOTE_AHEAD');
+  assert.equal(skipped.remoteDeviceName, 'OTHER-PC');
+  assert.equal(
+    JSON.parse(fixtures.files.get(`${dir}/manifest.json`).bytes.toString('utf8')).snapshotId,
+    'b'.repeat(64),
+    '跳过后远端 manifest 不应被改写',
+  );
+
+  const skipState = await readState(fixtures.dshHome);
+  assert.equal(skipState.lastSkipReason, 'REMOTE_AHEAD');
+  assert.equal(skipState.lastSkipRemoteDevice, 'OTHER-PC');
+  assert.equal(skipState.lastRemoteSnapshotId, first.snapshotId, '跳过不应把远端 id 记成本地版本');
+
+  // 界面要能拿到跳过原因。
+  const status = await buildStatus(fixtures.ctx, fixtures.config, { busy: false });
+  assert.equal(status.state.lastSkipReason, 'REMOTE_AHEAD');
+  assert.equal(status.state.lastSkipRemoteDevice, 'OTHER-PC');
+
+  // 手动上传（默认）：覆盖，并报告覆盖了谁的版本。
+  const manual = await uploadSnapshot(fixtures.ctx, fixtures.options);
+  assert.equal(manual.action, 'upload');
+  assert.equal(manual.overwroteRemote.deviceName, 'OTHER-PC');
+  assert.equal(
+    JSON.parse(fixtures.files.get(`${dir}/manifest.json`).bytes.toString('utf8')).snapshotId,
+    manual.snapshotId,
+  );
+  const finalState = await readState(fixtures.dshHome);
+  assert.equal(finalState.lastSkipReason, null, '成功上传后应清掉跳过标记');
+  assert.equal(finalState.lastRemoteSnapshotId, manual.snapshotId);
+});
