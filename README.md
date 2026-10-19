@@ -4,6 +4,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
+> 当前版本 **0.2.0**（[版本历史](./CHANGELOG.md)）
+
 `dsh-webdav-sync` 是 DSH 的一个插件（bundle + Host 插件 + 设置页），把当前 profile 的配置文件和本地插件包打包成快照上传到 WebDAV，或从 WebDAV 下载快照恢复。同步协议参考 [CC Switch](https://github.com/farion1231/cc-switch) 的 WebDAV 云同步机制：远端只放 `manifest.json` + `config.zip` + `plugins.zip`，manifest 记录每个 artifact 的 SHA-256 与整体快照 id；上传时 artifact 先传、manifest 最后传，下载时先校验再落盘。
 
 ## 功能

@@ -1,6 +1,6 @@
 {
   "name": "dsh-webdav-sync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "通过 WebDAV 在多设备间同步 DeepSeek Harness 的配置与插件（不同步会话）。",
   "type": "module",
   "license": "MIT",
@@ -21,6 +21,7 @@
     "locale/*.json",
     "icon.svg",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "test/*",
     "package-lock.json"
