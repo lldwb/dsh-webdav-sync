@@ -1,0 +1,28 @@
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="g1" x1="18" y1="7" x2="18" y2="29" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#69B9FF"/><stop offset="1" stop-color="#324DE2"/>
+    </linearGradient>
+    <linearGradient id="g2" x1="18" y1="7" x2="18" y2="29" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#67C7FE"/><stop offset="1" stop-color="#3F77D8"/>
+    </linearGradient>
+    <linearGradient id="g3" x1="18" y1="7" x2="18" y2="29" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7CB7FF"/><stop offset="1" stop-color="#4561EE"/>
+    </linearGradient>
+    <linearGradient id="t1" x1="18" y1="8" x2="18" y2="28" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#45E7A4"/><stop offset="1" stop-color="#05909D"/>
+    </linearGradient>
+    <linearGradient id="t2" x1="18" y1="10" x2="18" y2="28" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#51CFDB"/><stop offset="1" stop-color="#108792"/>
+    </linearGradient>
+    <linearGradient id="v1" x1="18" y1="12" x2="18" y2="26" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A797FC"/><stop offset="1" stop-color="#6E5BE8"/>
+    </linearGradient>
+  </defs>
+
+  <circle cx="14.6" cy="16.2" r="4.4" fill="url(#g2)"/>
+  <circle cx="21.4" cy="15.4" r="5.1" fill="url(#g2)"/>
+  <rect x="8.6" y="16.2" width="19" height="7.4" rx="3.7" fill="url(#g2)"/>
+  <path d="M13.2 22.2v-5.4m-1.8 1.8 1.8-1.8 1.8 1.8" stroke="#FFFFFF" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M22.6 16.4v5.8m-1.8-1.8 1.8 1.8 1.8-1.8" stroke="#FFFFFF" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

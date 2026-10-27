@@ -114,7 +114,7 @@ export function resolveBaseUrl(options) {
 export const REMOTE_LAYOUT_VERSION = 'v1';
 
 /** 插件版本（与 package.json 对齐，测试会断言）。 */
-export const PLUGIN_VERSION = '0.2.1';
+export const PLUGIN_VERSION = '0.2.2';
 
 /** profile 目录里参与同步的配置文件。 */
 export const PROFILE_CONFIG_FILES = [
