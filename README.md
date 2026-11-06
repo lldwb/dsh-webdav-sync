@@ -162,6 +162,25 @@ dsh-webdav-sync/
 └── test/               # node --test 用例
 ```
 
+## 兼容性与回归记录（DSH 0.2.2-rc.1）
+
+适配目标：已安装的 **DSH 0.2.2-rc.1**。本插件在 0.2.2 下**无需改代码**——用到的 `Config` 的 `.volatile()`、
+`ctx.credentials`、`ctx.connection.admit()` 与自建 prefix 路由（`ctx.webServer.register`）、
+`@deepseek-ai/dsh-client-ui-primitives` 的导出（`SettingsForm` / `SettingsFormModel` / `SettingsValueField` /
+`SettingsSecretField` / `Button` / `Toast`）在 0.2.2 均未破坏。本次只补回归证据与版本记录。
+
+- **Host 行**：devkit web 沙箱（`ui-webdav`）合成树包含 `- id: webdav-sync`（含 `provider: webdav`、
+  `passwordRef: DSH_WEBDAV_SYNC_PASSWORD`），插件卡片显示 1 个组件 / 1 运行中。
+- **设置页 UI 回归**：`dsh-webdav-sync@0.2.2 is loaded: its client half is in the page's manifest`
+  （引号内是沙箱当时的实际输出，当时 link 的版本是 0.2.2；本次只升版本号 + 写文档，未改代码）；
+  真实点击流程
+  （关「开始使用」→ 插件 → 查看 WebDAV 云同步）打开设置页：服务商（`webdav` / 预设 `custom`）、地址、账户、
+  **密码字段（`type=password`，显示「未配置」）**、远程根目录 `dsh-sync`、同步配置名 `default`、两个开关，
+  以及状态区（上次同步「从未同步」/ 状态「空闲」/ 远端目录 `/dsh-sync/v1/default`/ 本地配置）全部渲染 ——
+  该状态区来自 RPC，证明 **RPC 通道在 0.2.2 下可达**；全程**控制台 0 错误**。
+- **未连真实 WebDAV**：沙箱凭据策略扣下 `DSH_WEBDAV_SYNC_PASSWORD`，本次只验表单渲染 + RPC 可达，不做上传/下载。
+- **离线单测**：`node --test` → **75 / 75 通过**。
+
 ## License
 
 [MIT](./LICENSE)
