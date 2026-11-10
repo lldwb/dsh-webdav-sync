@@ -3,6 +3,18 @@
 本插件的版本号同时出现在 `package.json` 与 `index.js` 的 `PLUGIN_VERSION`（测试会断言两者一致），
 设置页「状态」里显示的版本号来自后者。
 
+## 0.2.4
+
+**变更**
+
+- **图标按官方矢量语言重绘**：36×36 青绿渐变云 + 上下一对 periwinkle（`#658EFF`）箭头，
+  表达「云端与本地双向同步」；配色只用官方 artwork 调色板。
+- **「内置插件配置」卡片插画**：client 半新增 `ITEM_ARTWORK_ID` / `ITEM_ARTWORK_URI` /
+  `registerItemArtwork()`，在 `apply()` 里把 `icon.svg` 的 data URI 登记进
+  `globalThis.__DSH_PLUGIN_ITEM_ARTWORK__['webdav-sync']`；新增 `test/client-artwork.test.mjs`
+  断言常量与 `icon.svg` 逐字节一致。
+- `node --test` → 81/81 通过。
+
 ## 0.2.3
 
 **变更**

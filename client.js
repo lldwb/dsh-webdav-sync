@@ -211,6 +211,44 @@ window.__ModuleLoader__.load({
      */
     const SETTINGS_NS = 'webdav-sync';
 
+    /**
+     * 「内置插件配置」卡片插画的注册键。
+     *
+     * DSH 插件页的卡片插画由随附的 plugin-manager 客户端写死（只有 shell / agent-loop /
+     * subagent / web-search 四个官方 id 的映射表），第三方插件没有声明入口；唯一的通道是
+     * `globalThis.__DSH_PLUGIN_ITEM_ARTWORK__` 这个全局注册表 —— 它由 dsh-plugin-devkit 的
+     * `scripts/patch-plugin-item-artwork.mjs` 给随附 bundle 补上查询逻辑。没打补丁的部署
+     * 不会读它，注册只是往一个没人看的对象里写一个键，无副作用。
+     */
+    const ITEM_ARTWORK_ID = 'webdav-sync';
+
+    /**
+     * 卡片插画的 data URI：包根 `icon.svg` 的原始字节做 base64。
+     *
+     * 必须与 `icon.svg` 逐字节一致 —— `test/client-artwork.test.mjs` 同时读两处做断言。
+     * 改图标后同步这一行：
+     *   node ../dsh-plugin-devkit/scripts/embed-plugin-artwork.mjs .
+     */
+    const ITEM_ARTWORK_URI =
+      'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzYiIGhlaWdodD0iMzYiIHZpZXdCb3g9IjAgMCAzNiAzNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KICA8Y2lyY2xlIGN4PSIxNy40IiBjeT0iMTEuOCIgcj0iNC44IiBmaWxsPSJ1cmwoI3dkRTEpIi8+CiAgPGNpcmNsZSBjeD0iMTEuNCIgY3k9IjE0IiByPSIzLjIiIGZpbGw9InVybCgjd2RFMSkiLz4KICA8Y2lyY2xlIGN4PSIyMi44IiBjeT0iMTMuNiIgcj0iMy40IiBmaWxsPSJ1cmwoI3dkRTEpIi8+CiAgPHJlY3QgeD0iOC4yIiB5PSIxMy44IiB3aWR0aD0iMTcuNiIgaGVpZ2h0PSI0LjIiIHJ4PSIyLjEiIGZpbGw9InVybCgjd2RFMSkiLz4KICA8cGF0aCBkPSJNMTIuNiAyNy40VjIxLjYiIHN0cm9rZT0iIzY1OEVGRiIgc3Ryb2tlLXdpZHRoPSIyLjgiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDxwYXRoIGQ9Ik05LjkgMjQuM0wxMi42IDIxLjZMMTUuMyAyNC4zIiBzdHJva2U9IiM2NThFRkYiIHN0cm9rZS13aWR0aD0iMi44IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KICA8cGF0aCBkPSJNMjMuNCAyMS42VjI3LjQiIHN0cm9rZT0iIzY1OEVGRiIgc3Ryb2tlLXdpZHRoPSIyLjgiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDxwYXRoIGQ9Ik0yMC43IDI0LjdMMjMuNCAyNy40TDI2LjEgMjQuNyIgc3Ryb2tlPSIjNjU4RUZGIiBzdHJva2Utd2lkdGg9IjIuOCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CiAgPGRlZnM+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9IndkRTEiIHgxPSIxOCIgeTE9IjciIHgyPSIxOCIgeTI9IjE4IiBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+CiAgICAgIDxzdG9wIHN0b3AtY29sb3I9IiM0NUU3QTQiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjMDU5MDlEIi8+CiAgICA8L2xpbmVhckdyYWRpZW50PgogIDwvZGVmcz4KPC9zdmc+Cg==';
+
+    /**
+     * 把本插件的卡片插画登记进 DSH 的全局注册表。
+     *
+     * 幂等；返回的注销函数只在值仍是自己写的那一条时删除，避免误删同 id 的后来者。
+     *
+     * @returns {() => void} 注销函数，交给 `ctx.effect` 回收。
+     */
+    function registerItemArtwork() {
+      const shared = globalThis;
+      if (shared.__DSH_PLUGIN_ITEM_ARTWORK__ === undefined) shared.__DSH_PLUGIN_ITEM_ARTWORK__ = {};
+      const registry = shared.__DSH_PLUGIN_ITEM_ARTWORK__;
+      registry[ITEM_ARTWORK_ID] = ITEM_ARTWORK_URI;
+      return () => {
+        if (registry[ITEM_ARTWORK_ID] === ITEM_ARTWORK_URI) delete registry[ITEM_ARTWORK_ID];
+      };
+    }
+
     /** Host 半注册的 RPC 通道（`ctx.connection.rpc.handle('/dsh-webdav-sync', ...)`）。 */
     const RPC_CHANNEL = '/dsh-webdav-sync';
 
@@ -1245,6 +1283,7 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       const t = ctx.locale.bind(NS);
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-webdav-sync: 词典');
+      ctx.effect(() => registerItemArtwork(), 'dsh-webdav-sync: 卡片插画');
 
       const card = new WebdavSyncCardController(ctx.configForms.get(SETTINGS_NS), ctx, t);
       ctx.effect(
