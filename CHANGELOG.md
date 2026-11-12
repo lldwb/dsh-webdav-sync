@@ -3,6 +3,22 @@
 本插件的版本号同时出现在 `package.json` 与 `index.js` 的 `PLUGIN_VERSION`（测试会断言两者一致），
 设置页「状态」里显示的版本号来自后者。
 
+## 0.2.5
+
+**适配 DSH 0.2.2-rc.2：真实 Loader + 设置页 UI 回归通过，无代码改动。**
+
+- **核对**：`configForms.get()` / `configForms.whileServed()`、`plugins.item`、
+  `plugins.bundle.config` 槽位、`ctx.remote.credentials.describe/set`、自建 prefix 路由
+  （`ctx.webServer.register` + `connection.admit`）在 rc.2 均未变；rc.2 对
+  `plugins.tab` 只新增可选 `update` 能力（加法）。
+- **回归**：devkit web 沙箱 `b-webdav-sync`（真实 Chrome + 真实 Loader）：client 半进页面
+  清单、打开时控制台 0 错误；侧边栏「插件」页出现「WebDAV 云同步」卡片；点开详情页后
+  标题/描述/图标、同步方式、服务商、服务器地址、账户、密码（`type=password`，「未配置」）、
+  远程根目录、同步配置名、两个开关、状态区（来自 RPC）与四个动作按钮全部渲染。
+- **仓库卫生**：删除本地工具（pnpm）生成的杂散 `pnpm-lock.yaml`（本仓库锁文件是
+  `package-lock.json`），并在 `.gitignore` 里忽略它，避免以后误提交。
+- 单测 `node --test` **81/81**。
+
 ## 0.2.4
 
 **变更**

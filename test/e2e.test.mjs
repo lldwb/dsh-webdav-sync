@@ -26,6 +26,7 @@ import {
   createRpcHandler,
   openSession,
   patchState,
+  PLUGIN_VERSION,
   readState,
   remoteDirSegments,
   remoteRootSegments,
@@ -37,6 +38,15 @@ import {
   uploadSnapshot,
   downloadSnapshot,
 } from '../index.js';
+
+// ─── 版本一致性 ─────────────────────────────────────────────
+
+test('PLUGIN_VERSION 与 package.json 的 version 一致（不硬编码版本号）', async () => {
+  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(typeof PLUGIN_VERSION, 'string');
+  assert.ok(PLUGIN_VERSION.length > 0);
+  assert.equal(PLUGIN_VERSION, pkg.version, 'index.js 的 PLUGIN_VERSION 必须与 package.json 同步升级');
+});
 
 // ─── WebDAV mock ────────────────────────────────────────────
 

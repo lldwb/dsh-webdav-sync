@@ -3,3 +3,6 @@ node_modules/
 .DS_Store
 Thumbs.db
 .scratch/
+# 本仓库的锁文件是 package-lock.json（npm）。devkit / dsh plugin add 会跑 pnpm，
+# 可能在插件目录留下 pnpm-lock.yaml —— 那是本地工具产物，不要提交。
+pnpm-lock.yaml

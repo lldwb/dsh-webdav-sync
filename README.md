@@ -162,12 +162,31 @@ dsh-webdav-sync/
 └── test/               # node --test 用例
 ```
 
-## 兼容性与回归记录（DSH 0.2.2-rc.1）
+## 兼容性与回归记录（DSH 0.2.2-rc.1 / rc.2）
 
-适配目标：已安装的 **DSH 0.2.2-rc.1**。本插件在 0.2.2 下**无需改代码**——用到的 `Config` 的 `.volatile()`、
-`ctx.credentials`、`ctx.connection.admit()` 与自建 prefix 路由（`ctx.webServer.register`）、
-`@deepseek-ai/dsh-client-ui-primitives` 的导出（`SettingsForm` / `SettingsFormModel` / `SettingsValueField` /
-`SettingsSecretField` / `Button` / `Toast`）在 0.2.2 均未破坏。本次只补回归证据与版本记录。
+适配目标：已安装的 **DSH 0.2.2-rc.2**（上一轮是 rc.1）。本插件在两代 rc 下**均无需改代码**——
+用到的 `Config` 的 `.volatile()`、`ctx.credentials`、`ctx.connection.admit()` 与自建 prefix 路由
+（`ctx.webServer.register`）、`@deepseek-ai/dsh-client-ui-primitives` 的导出（`SettingsForm` /
+`SettingsFormModel` / `SettingsValueField` / `SettingsSecretField` / `Button` / `Toast`）均未破坏。
+
+### DSH 0.2.2-rc.2 回归（0.2.5）
+
+- **核对**：`configForms.get()` / `configForms.whileServed()`、`plugins.item` 槽位、
+  `plugins.bundle.config` 槽位、`ctx.remote.credentials.describe/set` 在 rc.2 源码里均未变
+  （rc.2 只给 `plugins.tab` 增加了可选的 `update` 能力，属加法）。
+- **Host 行**：devkit web 沙箱（`b-webdav-sync`）合成树包含 `- id: webdav-sync`；
+  `dsh-webdav-sync@0.2.4 is loaded: its client half is in the page's manifest`，打开时控制台 0 错误。
+- **设置页 UI 回归**：真实点击流程（关预览说明 / 「开始使用」→ 侧边栏「插件」→ 点「WebDAV 云同步」
+  卡片）打开详情页：标题、描述、图标、同步方式（WebDAV）、服务商（自定义）、WebDAV 服务器地址、
+  WebDAV 账户、**密码字段（`type=password`，显示「未配置」）**、远程根目录 `dsh-sync`、
+  同步配置名 `default`、两个开关，以及状态区（上次同步「从未同步」/ 状态「空闲」/
+  远端目录 `/dsh-sync/v1/default` / 本地配置 `devkit-b-webdav-sync` / 「尚未配置 WebDAV 密码」提示）
+  与「测试连接 / 上传到云端 / 从云端下载 / 保存配置」按钮全部渲染 —— 状态区来自 RPC，
+  证明 **RPC 通道在 rc.2 下可达**；全程控制台 0 错误。
+- **未连真实 WebDAV**：沙箱凭据策略扣下 `DSH_WEBDAV_SYNC_PASSWORD`，本次只验表单渲染 + RPC 可达。
+- **离线单测**：`node --test` → **81 / 81 通过**。
+
+### DSH 0.2.2-rc.1 回归（0.2.3）
 
 - **Host 行**：devkit web 沙箱（`ui-webdav`）合成树包含 `- id: webdav-sync`（含 `provider: webdav`、
   `passwordRef: DSH_WEBDAV_SYNC_PASSWORD`），插件卡片显示 1 个组件 / 1 运行中。
