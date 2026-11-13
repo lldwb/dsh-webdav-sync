@@ -114,7 +114,7 @@ export function resolveBaseUrl(options) {
 export const REMOTE_LAYOUT_VERSION = 'v1';
 
 /** 插件版本（与 package.json 对齐，测试会断言）。 */
-export const PLUGIN_VERSION = '0.2.5';
+export const PLUGIN_VERSION = '0.2.6';
 
 /** profile 目录里参与同步的配置文件。 */
 export const PROFILE_CONFIG_FILES = [
@@ -1465,6 +1465,13 @@ export function installRpcChannel(ctx, config, runtime) {
         const dispose = webServer.register({
           kind: 'prefix',
           path: RPC_CHANNEL,
+          // 显式声明认证要求（DSH 0.2.2-rc.3 起 WebServer 路由的 `auth` 默认就是
+          // 'required'，官方 client-connection 的 /api 路由也这么写）。显式写出来的
+          // 意义是「这条 RPC 只给已登录的浏览器 UI 用」成为注册契约的一部分，而不是
+          // 依赖一个默认值——默认值一旦变化，缺省写法会让这条通道静默失去认证。
+          // 向后兼容 rc.2：旧版 register() 只做 kind/path 去重、把 route 原样存表，
+          // 多出的 auth 键被静默忽略（已从本机 app.asar 的 rc.2 源码核实）。
+          auth: 'required',
           handler: async (req, res) => {
             let admission;
             try {

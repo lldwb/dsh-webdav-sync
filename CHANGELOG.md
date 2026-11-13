@@ -3,6 +3,31 @@
 本插件的版本号同时出现在 `package.json` 与 `index.js` 的 `PLUGIN_VERSION`（测试会断言两者一致），
 设置页「状态」里显示的版本号来自后者。
 
+## 0.2.6
+
+**适配 DSH 0.2.2-rc.3：RPC 路由显式声明 `auth: 'required'`，向后兼容 rc.2。**
+
+- **变更**：设置页的 `/dsh-webdav-sync` prefix 路由在 `webServer.register()` 里显式声明
+  `auth: 'required'`。目标版本 WebServer 新增 `auth: 'anonymous' | 'required' | 'deny'`
+  （默认 `required`，`packages/host/webserver/src/index.ts` 的 `authPolicy()`），官方
+  `client-connection` 的 `/api` 路由也显式写 `'required'`。本插件的路由只给**已登录的
+  设置页**用，语义就是 required；显式写出来让「必须认证」成为注册契约的一部分，不再
+  依赖默认值（默认值一旦变化，缺省写法会让这条通道静默失去认证）。
+- **认证语义不变**：handler 内继续用 `connection.admit(req)`。这不是冗余——rc.2 的
+  WebServer **完全不做路由准入**（rc.2 `lib/index.js` 的 `handle()` 直接
+  `responder.handler(req, res)`，没有 authorize 步骤），所以 `admit()` 是 rc.2 上唯一的
+  认证。目标版本两者都在（WebServer 先准入 + handler 再 admit，`admit()` 仍在且
+  `PeerAdmission` 形状不变），保留它是双保险。
+- **向后兼容 rc.2**：rc.2 的 `register(route)` 只做 `(kind, path)` 去重后 `table.set()`，
+  多出的 `auth` 键被静默忽略（已从本机 `app.asar` 里 rc.2 的
+  `@deepseek-ai/dsh-host-webserver/lib/index.js` 核实），因此可无条件写。
+- **核对无其它破坏点**：`configForms.get/whileServed`、`plugins.item` 槽位、
+  `ctx.remote.credentials.describe/set`（`describe([ref])` → `value[ref].{configured,writable}`）、
+  `ctx.connection.rpc.call`、`credentials.resolve`、`settings.configure({auto:false}, fiber)`、
+  `profileContext` 在目标版本均未变；未使用 `ctx.root`、`Service.config`、`rankByName`、
+  删除的包子路径等 0.2.2-rc.3 破坏点。
+- 单测 `node --test` **82/82**。
+
 ## 0.2.5
 
 **适配 DSH 0.2.2-rc.2：真实 Loader + 设置页 UI 回归通过，无代码改动。**
