@@ -3,6 +3,27 @@
 本插件的版本号同时出现在 `package.json` 与 `index.js` 的 `PLUGIN_VERSION`（测试会断言两者一致），
 设置页「状态」里显示的版本号来自后者。
 
+## 0.2.7
+
+**适配 DSH 0.2.2-rc.5：删除 RPC 路由上的 master-only `auth` 键，准入由 handler 内 `connection.admit` 保证。**
+
+- **变更**：`webServer.register()` 的 `/dsh-webdav-sync` prefix 路由对象删掉 `auth: 'required'`。
+  该键只存在于 master 基线：`dsh-v0.2.2-rc.5` 的 `WebRoute` 只有 `kind` / `path` / `handler`
+  （`packages/host/webserver/src/index.ts`），`register()` 只做 kind/path 去重后
+  `table.set(path, route)`，没有路由级准入逻辑，多出的 `auth` 键被静默忽略、不产生任何认证
+  效果。留着它会让人误以为「路由级认证」存在，故本次删除；这是纯清理，**行为不变**。
+- **准入不变**：handler 内继续用 `connection.admit(req)`，**这是 rc.5 上唯一的准入**。
+  rc.5 的 `admit(request: ConnectionTrustRequest): PeerAdmission`，
+  `PeerAdmission` 只有 `{ peer }` 或 `{ rejection: 401 | 403 }`（没有 503）；
+  本插件在 `'rejection' in admission` 时按该值写 401/403。**`admit` 未删、也不能删。**
+- **验证**：
+  - `git show dsh-v0.2.2-rc.5:packages/host/webserver/src/index.ts` → `WebRoute` 只有
+    `kind` / `path` / `handler`；
+  - `git grep "auth:" dsh-v0.2.2-rc.5 -- packages/host/webserver` → 零命中；
+  - 单测 `node --test` **82/82**。测试无需改：没有任何用例断言路由 `auth` 字段
+    （`test/webdav.test.mjs` 里的 `auth` 是 WebDAV Basic Auth、`503` 是 WebDAV 服务端
+    错误码语义，与路由准入无关）。
+
 ## 0.2.6
 
 **适配 DSH 0.2.2-rc.3：RPC 路由显式声明 `auth: 'required'`，向后兼容 rc.2。**

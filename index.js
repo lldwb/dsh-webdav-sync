@@ -114,7 +114,7 @@ export function resolveBaseUrl(options) {
 export const REMOTE_LAYOUT_VERSION = 'v1';
 
 /** 插件版本（与 package.json 对齐，测试会断言）。 */
-export const PLUGIN_VERSION = '0.2.6';
+export const PLUGIN_VERSION = '0.2.7';
 
 /** profile 目录里参与同步的配置文件。 */
 export const PROFILE_CONFIG_FILES = [
@@ -1465,13 +1465,15 @@ export function installRpcChannel(ctx, config, runtime) {
         const dispose = webServer.register({
           kind: 'prefix',
           path: RPC_CHANNEL,
-          // 显式声明认证要求（DSH 0.2.2-rc.3 起 WebServer 路由的 `auth` 默认就是
-          // 'required'，官方 client-connection 的 /api 路由也这么写）。显式写出来的
-          // 意义是「这条 RPC 只给已登录的浏览器 UI 用」成为注册契约的一部分，而不是
-          // 依赖一个默认值——默认值一旦变化，缺省写法会让这条通道静默失去认证。
-          // 向后兼容 rc.2：旧版 register() 只做 kind/path 去重、把 route 原样存表，
-          // 多出的 auth 键被静默忽略（已从本机 app.asar 的 rc.2 源码核实）。
-          auth: 'required',
+          // 路由级认证：DSH 0.2.2-rc.5 的 `WebRoute` 只有 `kind` / `path` / `handler`
+          // 三个字段（`packages/host/webserver/src/index.ts` 的
+          // `register(route: WebRoute | WebResourceRoute)`），**没有 `auth` 字段，也没有
+          // 路由级准入逻辑**。这条 RPC 的唯一准入就是下面 handler 里的
+          // `connection.admit(req)`：未通过时写 401/403（rc.5 的 `PeerAdmission` 只有
+          // `{ peer }` 或 `{ rejection: 401 | 403 }`，没有 503）。**admit 绝不能删**。
+          // 旧版曾在这里写 `auth: 'required'`；rc.5 的 `register()` 只做 kind/path
+          // 去重后把 route 原样存表，该键被静默忽略、不产生任何认证效果，本次删除，
+          // 避免让人误以为这条通道有路由级认证。
           handler: async (req, res) => {
             let admission;
             try {
