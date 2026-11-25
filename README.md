@@ -8,6 +8,13 @@
 
 `dsh-webdav-sync` 是 DSH 的一个插件（bundle + Host 插件 + 设置页），把当前 profile 的配置文件和本地插件包打包成快照上传到 WebDAV，或从 WebDAV 下载快照恢复。同步协议参考 [CC Switch](https://github.com/farion1231/cc-switch) 的 WebDAV 云同步机制：远端只放 `manifest.json` + `config.zip` + `plugins.zip`，manifest 记录每个 artifact 的 SHA-256 与整体快照 id；上传时 artifact 先传、manifest 最后传，下载时先校验再落盘。
 
+## 加载方式
+
+加载方式：常驻（理由：UI 类 + 后台同步——设置页与定时同步，零工具；同步要进程常驻才会跑）
+
+> 加载方式是 DSH 插件开发的**必答项**（工作区约定 §10.0）：按需的必须有 skill 入口与
+> `onDemand: false` 退路，常驻的必须写理由。这条标记行供人工审阅与将来做门禁。
+
 ## 功能
 
 - **配置与插件一起同步**：profile 的 `package.json` / `cordis.patch.yml` / `cordis.yml` / `pnpm-lock.yaml`，以及所有 `link:` 本地插件包的源码目录。
