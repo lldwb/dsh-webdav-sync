@@ -68,7 +68,7 @@ npm install     # 或 pnpm install
 
 | 字段 | 默认 | 含义 |
 |---|---|---|
-| `provider` | `webdav` | 同步方式；当前只有 WebDAV（保留字段方便将来扩展） |
+| `provider` | `webdav` | 同步方式；当前只有 WebDAV |
 | `providerPreset` | `custom` | 服务商预设：`jianguoyun` / `nextcloud` / `synology` / `custom` |
 | `baseUrl` | 空 | WebDAV 服务器地址（含路径，例如 `https://dav.jianguoyun.com/dav/`） |
 | `username` | 空 | WebDAV 账户 |
